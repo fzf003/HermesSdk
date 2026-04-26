@@ -1,0 +1,18 @@
+
+## 发送Webhook请求
+POST  http://localhost:52816/webhooks/dotnet-webhook
+Content-Type: application/json
+
+{
+  "routeName": "dotnet-webhook",
+  "eventType": "test",
+  "payload": {
+    "Id": 1,
+    "Name": "fzf003",
+    "Message": "土豆土豆，我是南瓜，收到回我"
+  }
+}
+
+
+
+

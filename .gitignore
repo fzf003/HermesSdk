@@ -1,0 +1,26 @@
+# ===== 敏感配置（包含真实 IP/密码）=====
+ 
+.env
+
+# ===== 构建产物 =====
+bin/
+obj/
+*.exe
+*.dll
+*.pdb
+
+# ===== IDE =====
+.vs/
+.vscode/
+*.user
+*.suo
+.codex
+.github
+openspec
+.qoder
+ 
+
+# ===== 备份文件 =====
+*.bak
+*.bak-*
+document 
