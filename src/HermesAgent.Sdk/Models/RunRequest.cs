@@ -4,7 +4,7 @@ namespace HermesAgent.Sdk;
 
 public record RunRequest
 {
-    [JsonPropertyName("prompt")]
+    [JsonPropertyName("input")]
     public required string Prompt { get; init; }
 
     [JsonPropertyName("model")]

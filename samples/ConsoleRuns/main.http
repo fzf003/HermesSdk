@@ -1,0 +1,23 @@
+
+###
+POST http://localhost:8642/v1/runs
+Content-Type: application/json
+Authorization: Bearer hermes-csharp-integration-key-20250416
+
+{
+    "input": "分析 HermesAgent.Sdk项目中可能存在的性能瓶颈",
+    "model": "default",
+    "skills": null,
+    "max_iterations": null,
+    "metadata": null
+}
+
+
+
+####
+GET  http://localhost:8642/v1/runs/run_7492effc03614c269621a71a8c1a4e5d/events
+Content-Type: application/json
+Authorization: Bearer hermes-csharp-integration-key-20250416
+
+###
+GET http://localhost:8642/health

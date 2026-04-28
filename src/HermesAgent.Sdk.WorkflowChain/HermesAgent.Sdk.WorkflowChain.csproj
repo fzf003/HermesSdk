@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <RootNamespace>HermesAgent.Sdk.WorkflowChain</RootNamespace>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <PackageId>HermesAgent.Sdk.WorkflowChain</PackageId>
+    <Version>0.1.0-alpha.1</Version>
+    <Authors>Hermes Agent Team</Authors>
+    <Description>WorkflowChain - Lightweight workflow orchestration for HermesAgent.Sdk. Chain-of-responsibility pattern for composing Agent calls and local code steps.</Description>
+    <PackageTags>hermes;agent;ai;workflow;orchestration;chain-of-responsibility</PackageTags>
+    <PackageProjectUrl>https://github.com/your-org/hermes-agent-sdk</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/your-org/hermes-agent-sdk</RepositoryUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <NoWarn>$(NoWarn);1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\HermesAgent.Sdk\HermesAgent.Sdk.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.7" />
+  </ItemGroup>
+
+</Project>
