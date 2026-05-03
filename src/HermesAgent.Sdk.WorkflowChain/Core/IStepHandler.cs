@@ -23,6 +23,13 @@ public abstract class StepHandlerBase : IStepHandler
     public abstract string StepId { get; }
     public abstract Task<StepResult> ExecuteAsync(WorkflowContext context, CancellationToken ct);
 
+    /// <summary>
+    /// 步骤级心跳扩展时长。当返回 null 时使用全局心跳阈值；
+    /// 当返回具体 TimeSpan 时，心跳检测的有效阈值取 max(全局阈值, 此值)。
+    /// 适用于人工审批等长时间等待场景。
+    /// </summary>
+    public virtual TimeSpan? HeartbeatExtension => null;
+
     /// <summary>创建一个序列步骤结果（下一步只有一个）</summary>
     protected static StepResult Sequential(string nextStepId, object? output = null)
         => new()
@@ -57,6 +64,32 @@ public abstract class StepHandlerBase : IStepHandler
             NextStepIds = childStepIds.ToList(),
             WaitForParallelCompletion = true,
             JoinDownstreamStepId = downstreamStepId,
+        };
+
+    /// <summary>创建一个并行步骤结果（任一完成即推进，其余结果被跳过）</summary>
+    protected static StepResult ParallelAny(params string[] nextStepIds)
+        => new()
+        {
+            StepId = "",
+            IsSuccess = true,
+            NextStepIds = nextStepIds.ToList(),
+            WaitForParallelCompletion = true,
+            WaitMode = ParallelWaitMode.Any,
+        };
+
+    /// <summary>
+    /// 声明式并行汇合（任一完成模式）：任一子步骤完成后立即推进到下游步骤。
+    /// 其余子步骤的结果将被幂等跳过。
+    /// </summary>
+    protected static StepResult ParallelJoinAny(string downstreamStepId, params string[] childStepIds)
+        => new()
+        {
+            StepId = "",
+            IsSuccess = true,
+            NextStepIds = childStepIds.ToList(),
+            WaitForParallelCompletion = true,
+            JoinDownstreamStepId = downstreamStepId,
+            WaitMode = ParallelWaitMode.Any,
         };
 
     /// <summary>工作流完成（无下一步）</summary>

@@ -7,7 +7,7 @@ public class WorkflowInstance
 {
     public WorkflowContext Context { get; init; } = null!;
     public string EntryStepId { get; init; } = "";
-    public string Status { get; set; } = "running"; // running | completed | failed
+    public string Status { get; set; } = "running"; // running | timed-out | completed | failed
     public DateTime StartedAt { get; set; } = DateTime.UtcNow;
     public DateTime? CompletedAt { get; set; }
 

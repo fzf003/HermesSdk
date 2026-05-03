@@ -22,4 +22,7 @@ public interface IWorkflowStateStore
 
     /// <summary>获取所有 running 状态的实例 ID（用于启动恢复）</summary>
     Task<List<string>> ListRunningAsync(CancellationToken ct = default);
+
+    /// <summary>获取所有 timed-out 状态的实例 ID（用于监控和恢复）</summary>
+    Task<List<string>> ListTimedOutAsync(CancellationToken ct = default);
 }

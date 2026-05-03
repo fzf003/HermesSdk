@@ -36,4 +36,13 @@ public class InMemoryStateStore : IWorkflowStateStore
             .ToList();
         return Task.FromResult(running);
     }
+
+    public Task<List<string>> ListTimedOutAsync(CancellationToken ct = default)
+    {
+        var timedOut = _store.Values
+            .Where(c => c.Status == "timed-out")
+            .Select(c => c.InstanceId)
+            .ToList();
+        return Task.FromResult(timedOut);
+    }
 }

@@ -18,10 +18,13 @@ obj/
 .github
 openspec
 .qoder
+.dotnet
  
 
 # ===== 备份文件 =====
 *.bak
 *.bak-*
 document 
+.tmp-stage2-segment.txt
 debug.log
+tests-build.log

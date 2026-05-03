@@ -1,6 +1,18 @@
 namespace HermesAgent.Sdk.WorkflowChain;
 
 /// <summary>
+/// 并行等待模式 — 决定并行步骤的推进策略。
+/// </summary>
+public enum ParallelWaitMode
+{
+    /// <summary>默认：等待所有并行步骤完成后推进</summary>
+    All,
+
+    /// <summary>任一完成即推进，其余步骤结果被跳过</summary>
+    Any,
+}
+
+/// <summary>
 /// 步骤执行结果 — Handler 返回给调度器的指令。
 /// </summary>
 public class StepResult
@@ -24,7 +36,7 @@ public class StepResult
     /// 该步骤触发的下一步步骤 ID 列表。
     /// 多个 = 并行执行下一步。
     /// </summary>
-    public List<string>? NextStepIds { get; set; }
+    public List<string>? NextStepIds { get; set; } = new();
 
     /// <summary>是否等待所有并行步骤完成后才继续</summary>
     public bool WaitForParallelCompletion { get; set; }
@@ -34,4 +46,10 @@ public class StepResult
     /// 非 ParallelJoin 时为 null。
     /// </summary>
     public string? JoinDownstreamStepId { get; set; }
+
+    /// <summary>
+    /// 并行等待模式。默认 All（等待所有并行步骤完成），
+    /// 设为 Any 时任一完成即推进。
+    /// </summary>
+    public ParallelWaitMode WaitMode { get; init; } = ParallelWaitMode.All;
 }

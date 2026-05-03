@@ -1,7 +1,8 @@
+using Microsoft.Extensions.Logging;
 using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
+using System.Text.Encodings.Web;
 using System.Text.Json;
-using Microsoft.Extensions.Logging;
 
 namespace HermesAgent.Sdk;
 
@@ -13,7 +14,7 @@ namespace HermesAgent.Sdk;
 public class HermesRunClient : IHermesRunClient
 {
     private readonly HttpClient _httpClient;
-    private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
+    private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping, WriteIndented = true };
 
     /// <summary>
     /// 初始化 HermesRunClient 实例。
@@ -68,16 +69,17 @@ public class HermesRunClient : IHermesRunClient
             var line = await reader.ReadLineAsync(ct);
             if (line == null)
                 break;
-            if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data: "))
+            if (string.IsNullOrWhiteSpace(line)|| !line.StartsWith("data: "))
                 continue;
 
+ 
             var data = line[6..];
-            if (data == "[DONE]")
-                yield break;
-
+ 
             var evt = JsonSerializer.Deserialize<RunEvent>(data, _jsonOptions);
             if (evt is not null)
+            {
                 yield return evt;
+            }
         }
     }
 

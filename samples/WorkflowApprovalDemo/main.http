@@ -1,0 +1,95 @@
+@baseUrl = http://localhost:5000
+
+### ============================================================
+### Workflows
+### ============================================================
+
+### 启动工作流
+POST {{baseUrl}}/api/workflows
+Content-Type: application/json
+
+{
+  "entryStepId": "review-agent",
+  "initialInput": {
+    "title": "采购申请 #P2026-0501",
+    "amount": 25000,
+    "department": "研发部",
+    "requester": "李四"
+  }
+}
+
+### 启动工作流（指定 instanceId）
+POST {{baseUrl}}/api/workflows
+Content-Type: application/json
+
+{
+  "entryStepId": "review-agent",
+  "instanceId": "wf-bab3d2dcf6554ff38",
+  "initialInput": {
+    "title": "采购申请 #P2026-0502",
+    "amount": 500000,
+    "department": "市场部",
+    "requester": "王五"
+  }
+}  
+
+### 查询工作流实例状态
+@instanceId = wf-2e891b485e2f44faa
+GET {{baseUrl}}/api/workflows/{{instanceId}}
+
+### 查询步骤执行记录
+GET {{baseUrl}}/api/workflows/{{instanceId}}/steps
+
+### ============================================================
+### Callbacks
+### ============================================================
+
+### 人工审批回调 — 通过
+POST {{baseUrl}}/api/workflows/{{instanceId}}/approval/callback
+Content-Type: application/json
+
+{
+  "stepId": "manager-approval",
+  "decision": "approved",
+  "comment": "金额合理，批准采购",
+  "approverId": "mgr-zhangsan"
+}
+
+### 人工审批回调 — 拒绝
+POST {{baseUrl}}/api/workflows/{{instanceId}}/approval/callback
+Content-Type: application/json
+
+{
+  "stepId": "manager-approval",
+  "decision": "rejected",
+  "comment": "金额过大，需要总监审批",
+  "approverId": "mgr-zhangsan"
+}
+
+### Agent Webhook 回调
+POST {{baseUrl}}/api/workflows/{{instanceId}}/webhook/callback
+Content-Type: application/json
+
+{
+  "stepId": "review-agent",
+  "output": "{\"approved\":true,\"comment\":\"审核通过\"}"
+}
+
+### Agent Webhook 回调（带错误）
+POST {{baseUrl}}/api/workflows/{{instanceId}}/webhook/callback
+Content-Type: application/json
+
+{
+  "stepId": "review-agent",
+  "output": null,
+  "error": "Agent 处理超时"
+}
+
+### ============================================================
+### Recovery — 超时实例恢复
+### 心跳超时后实例状态为 timed-out，可手动恢复
+### 注意：审批回调/Webhook 回调到达时会自动恢复，通常无需手动操作
+### ============================================================
+
+### 恢复超时工作流实例（仅 timed-out 状态可恢复）
+POST {{baseUrl}}/api/workflows/{{instanceId}}/resume

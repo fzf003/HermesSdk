@@ -19,6 +19,9 @@ public enum StepStatus
 
     /// <summary>执行失败</summary>
     Failed,
+
+    /// <summary>重启恢复中，等待旧回调或超时重发</summary>
+    Recovering,
 }
 
 /// <summary>
