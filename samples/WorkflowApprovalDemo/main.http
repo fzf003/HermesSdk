@@ -34,7 +34,7 @@ Content-Type: application/json
 }  
 
 ### 查询工作流实例状态
-@instanceId = wf-2e891b485e2f44faa
+@instanceId = wf-ae8a7ef4c7e64c93b
 GET {{baseUrl}}/api/workflows/{{instanceId}}
 
 ### 查询步骤执行记录

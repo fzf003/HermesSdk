@@ -16,10 +16,21 @@ public class WorkflowEngine : IAsyncDisposable
     private readonly IHermesRunClient _runClient;
     private readonly ILogger<WorkflowEngine> _logger;
     private readonly IWorkflowStateStore _stateStore;
+    private readonly WorkflowRegistry? _workflowRegistry;
     private readonly ConcurrentDictionary<string, WorkflowInstance> _instances = new();
+
+    // 可靠性组件
+    private readonly RetryExecutor _retryExecutor;
+    private readonly ErrorHandler _errorHandler;
 
     // ParallelJoin 计数器：instanceId → (JoinDownstreamStepId → 剩余计数, 原始子步骤列表)
     private readonly ConcurrentDictionary<string, JoinTracker> _joinTrackers = new();
+
+    // 子工作流追踪：parentInstanceId:subWorkflowStepId → subWorkflowInstanceId
+    private readonly ConcurrentDictionary<string, string> _subWorkflowMappings = new();
+
+    // StepDefinition 映射："workflowName:stepId" → StepDefinition
+    private readonly ConcurrentDictionary<string, StepDefinition> _stepDefinitions = new();
 
     // 恢复 Timer："instanceId:stepId" → CancellationTokenSource
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _recoveryTimers = new();
@@ -40,7 +51,8 @@ public class WorkflowEngine : IAsyncDisposable
         IHermesWebhookClient webhookClient,
         IHermesRunClient runClient,
         ILogger<WorkflowEngine> logger,
-        IWorkflowStateStore stateStore
+        IWorkflowStateStore stateStore,
+        WorkflowRegistry? workflowRegistry = null
     )
     {
         _handlers = handlers.ToDictionary(h => h.StepId);
@@ -48,6 +60,11 @@ public class WorkflowEngine : IAsyncDisposable
         _runClient = runClient;
         _logger = logger;
         _stateStore = stateStore;
+        _workflowRegistry = workflowRegistry;
+
+        // 初始化可靠性组件
+        _retryExecutor = new RetryExecutor(LoggerFactory.Create(b => { }).CreateLogger<RetryExecutor>());
+        _errorHandler = new ErrorHandler(LoggerFactory.Create(b => { }).CreateLogger<ErrorHandler>(), stateStore);
     }
 
     // =================================================================
@@ -55,16 +72,43 @@ public class WorkflowEngine : IAsyncDisposable
     // =================================================================
 
     /// <summary>
+    /// 注册工作流的步骤定义。YAML 配置中的 retry/timeout/error_policy 通过此方法传入。
+    /// </summary>
+    /// <param name="workflowName">工作流名称（用作命名空间隔离）</param>
+    /// <param name="definitions">步骤定义列表</param>
+    public void RegisterStepDefinitions(string workflowName, IEnumerable<StepDefinition> definitions)
+    {
+        if (string.IsNullOrEmpty(workflowName))
+            throw new ArgumentNullException(nameof(workflowName));
+        if (definitions == null)
+            throw new ArgumentNullException(nameof(definitions));
+
+        foreach (var def in definitions)
+            _stepDefinitions[$"{workflowName}:{def.Id}"] = def;
+    }
+
+    /// <summary>
+    /// 获取步骤定义。无 workflowName 时返回 null。
+    /// </summary>
+    private StepDefinition? GetStepDefinition(string? workflowName, string stepId)
+    {
+        workflowName ??= "__default__";
+        return _stepDefinitions.TryGetValue($"{workflowName}:{stepId}", out var def) ? def : null;
+    }
+
+    /// <summary>
     /// 启动工作流。
     /// </summary>
     /// <param name="entryStepId">入口步骤 ID</param>
     /// <param name="context">工作流上下文（InstanceId 可选，不指定则自动生成）</param>
     /// <param name="ct">取消令牌</param>
+    /// <param name="workflowName">工作流名称（用于查找 StepDefinition，可选）</param>
     /// <returns>工作流实例 ID</returns>
     public async Task<string> StartAsync(
         string entryStepId,
         WorkflowContext context,
-        CancellationToken ct = default
+        CancellationToken ct = default,
+        string? workflowName = null
     )
     {
         if (!_handlers.TryGetValue(entryStepId, out var entryHandler))
@@ -72,8 +116,12 @@ public class WorkflowEngine : IAsyncDisposable
 
         var instance = new WorkflowInstance { Context = context, EntryStepId = entryStepId, };
 
-        // 为所有已注册步骤预建 Pending 记录
-        InitializeRecords(instance);
+        // 关联工作流名称（用于查找 StepDefinition）
+        if (workflowName != null)
+            instance.WorkflowName = workflowName;
+
+        // 为工作流步骤预建 Pending 记录
+        var stepCount = InitializeRecords(instance, workflowName);
 
         _instances[context.InstanceId] = instance;
 
@@ -81,7 +129,7 @@ public class WorkflowEngine : IAsyncDisposable
             "工作流启动: {InstanceId}, 入口: {Step}, 总步骤: {Count}",
             context.InstanceId,
             entryStepId,
-            _handlers.Count
+            stepCount
         );
 
         // 持久化：新实例
@@ -119,10 +167,17 @@ public class WorkflowEngine : IAsyncDisposable
 
                 var instance = checkpoint.ToInstance();
 
+                // 恢复子工作流映射
+                if (checkpoint.SubWorkflowMappings != null)
+                {
+                    foreach (var kvp in checkpoint.SubWorkflowMappings)
+                        _subWorkflowMappings[kvp.Key] = kvp.Value;
+                }
+
                 // 将 InFlight AgentStep 设为 Recovering 状态
                 foreach (var stepId in instance.InFlightStepIds)
                 {
-                    var record = instance.StepRecords.Find(r => r.StepId == stepId);
+                    var record = instance.StepRecords.FirstOrDefault(r => r.StepId == stepId);
                     if (record != null && record.Status == StepStatus.Dispatched)
                     {
                         record.Status = StepStatus.Recovering;
@@ -288,11 +343,41 @@ public class WorkflowEngine : IAsyncDisposable
     }
 
     /// <summary>
+    /// 获取子工作流映射关系。
+    /// </summary>
+    /// <param name="parentInstanceId">父工作流实例ID</param>
+    /// <param name="stepId">子工作流步骤ID</param>
+    /// <returns>子工作流实例ID,如果不存在则返回null</returns>
+    public string? GetSubWorkflowInstanceId(string parentInstanceId, string stepId)
+    {
+        var key = $"{parentInstanceId}:{stepId}";
+        return _subWorkflowMappings.TryGetValue(key, out var subInstanceId) ? subInstanceId : null;
+    }
+
+    /// <summary>
+    /// 获取所有子工作流映射。
+    /// </summary>
+    /// <param name="parentInstanceId">父工作流实例ID</param>
+    /// <returns>子工作流步骤ID到实例ID的映射字典</returns>
+    public Dictionary<string, string> GetAllSubWorkflows(string parentInstanceId)
+    {
+        return _subWorkflowMappings
+            .Where(kvp => kvp.Key.StartsWith($"{parentInstanceId}:"))
+            .ToDictionary(
+                kvp => kvp.Key.Substring(parentInstanceId.Length + 1),
+                kvp => kvp.Value
+            );
+    }
+
+    /// <summary>
     /// 关闭引擎，取消所有恢复 Timer 和 shutdown 令牌。
     /// </summary>
     public async ValueTask DisposeAsync()
     {
         _shutdownCts.Cancel();
+
+        // 清理子工作流映射
+        _subWorkflowMappings.Clear();
 
         // 取消所有恢复 Timer
         foreach (var (_, cts) in _recoveryTimers)
@@ -397,6 +482,7 @@ public class WorkflowEngine : IAsyncDisposable
         {
             MarkFailed(record, error, detail: null);
             ctx.IsRunning = false;
+            CleanupInstanceResources(instanceId);
             _logger.LogError(
                 "步骤失败: {InstanceId}/{Step}, 错误: {Error}",
                 instanceId,
@@ -464,6 +550,7 @@ public class WorkflowEngine : IAsyncDisposable
             );
             instance.Status = "failed";
 
+            CleanupInstanceResources(instanceId);
             await SaveCheckpointAsync(instance, ct);
             return;
         }
@@ -571,27 +658,36 @@ public class WorkflowEngine : IAsyncDisposable
         {
             _logger.LogError("未注册的步骤: {Step}", stepId);
             ctx.IsRunning = false;
+            instance.Status = "failed";
+            CleanupInstanceResources(instance.Context.InstanceId);
             return;
         }
 
         var record = GetOrCreateRecord(instance, stepId);
         record.TriggeredBy = triggeredBy;
 
-        if (handler is AgentStepHandler agentHandler)
+        // 通过 workflowName + stepId 复合键查询 StepDefinition
+        var stepDef = GetStepDefinition(instance.WorkflowName, stepId);
+
+        if (handler is SubWorkflowStepHandler subWorkflowHandler)
         {
-            await ExecuteAgentStepAsync(instance, stepId, agentHandler, record, ct);
+            await ExecuteSubWorkflowStepAsync(instance, stepId, subWorkflowHandler, record, stepDef, ct);
+        }
+        else if (handler is AgentStepHandler agentHandler)
+        {
+            await ExecuteAgentStepAsync(instance, stepId, agentHandler, record, stepDef, ct);
         }
         else if (handler is HumanApprovalStepHandler approvalHandler)
         {
-            await ExecuteHumanApprovalStepAsync(instance, stepId, approvalHandler, record, ct);
+            await ExecuteHumanApprovalStepAsync(instance, stepId, approvalHandler, record, stepDef, ct);
         }
         else if (handler is CodeStepHandler codeHandler)
         {
-            await ExecuteCodeStepAsync(instance, stepId, codeHandler, record, ct);
+            await ExecuteCodeStepAsync(instance, stepId, codeHandler, record, stepDef, ct);
         }
         else if (handler is DelayStepHandler delayHandler)
         {
-            await ExecuteDelayStepAsync(instance, stepId, delayHandler, record, ct);
+            await ExecuteDelayStepAsync(instance, stepId, delayHandler, record, stepDef, ct);
         }
         else
         {
@@ -599,6 +695,8 @@ public class WorkflowEngine : IAsyncDisposable
             record.Status = StepStatus.Failed;
             record.ErrorMessage = $"不支持的类型: {handler.GetType().Name}";
             ctx.IsRunning = false;
+            instance.Status = "failed";
+            CleanupInstanceResources(instance.Context.InstanceId);
             await SaveCheckpointAsync(instance, ct);
         }
     }
@@ -608,10 +706,19 @@ public class WorkflowEngine : IAsyncDisposable
         string stepId,
         AgentStepHandler agentHandler,
         StepRecord record,
+        StepDefinition? stepDef,
         CancellationToken ct
     )
     {
         var ctx = instance.Context;
+
+        // 创建超时监控（如果 StepDefinition 配置了 timeout）
+        var timeoutConfig = stepDef != null
+            ? YamlConfigConverter.ConvertTimeoutConfig(stepDef.Timeout, stepDef.TimeoutAction)
+            : null;
+        using var timeoutMonitor = timeoutConfig != null
+            ? new TimeoutMonitor(stepId, ctx.InstanceId, timeoutConfig, LoggerFactory.Create(b => { }).CreateLogger<TimeoutMonitor>())
+            : null;
 
         if (agentHandler.Mode == AgentCommunicationMode.RunClient)
         {
@@ -622,28 +729,57 @@ public class WorkflowEngine : IAsyncDisposable
             var prompt = agentHandler.BuildPrompt(ctx);
             record.InputSnapshot = prompt;
 
+            // 构建步骤执行的取消令牌（关联超时和 shutdown）
+            using var linkedCts = timeoutMonitor != null
+                ? CancellationTokenSource.CreateLinkedTokenSource(_shutdownCts.Token, timeoutMonitor.CancellationToken)
+                : null;
+            var stepCt = linkedCts?.Token ?? _shutdownCts.Token;
+
+            // 判断是否应用重试
+            var shouldRetry = stepDef?.Retry != null && agentHandler.Mode == AgentCommunicationMode.RunClient;
+
             try
             {
-                var runId = await _runClient.StartAsync(prompt, agentHandler.RunOptions, ct);
-                _logger.LogDebug(
-                    "RunClient 已启动: {InstanceId}/{Step}, RunId: {RunId}",
-                    ctx.InstanceId,
-                    stepId,
-                    runId
-                );
-
-                await foreach (var evt in _runClient.SubscribeEventsAsync(runId, ct))
+                if (shouldRetry)
                 {
-                    if (evt is { Type: "run.completed" })
+                    // 使用重试执行器包装 RunClient 调用
+                    var retryConfig = YamlConfigConverter.ConvertRetryConfig(stepDef!.Retry!);
+                    await _retryExecutor.ExecuteWithRetryAsync<string>(async innerCt =>
                     {
-                        lock (ctx.SyncLock)
-                            ctx.StepOutputs[stepId] = evt.OutPut;
-                        record.OutputSnapshot = evt.OutPut?.ToString();
-                        MarkCompleted(record);
-                        break;
+                        var runId = await _runClient.StartAsync(prompt, agentHandler.RunOptions, innerCt);
+                        _logger.LogDebug("RunClient 已启动: {InstanceId}/{Step}, RunId: {RunId}", ctx.InstanceId, stepId, runId);
+
+                        await foreach (var evt in _runClient.SubscribeEventsAsync(runId, innerCt))
+                        {
+                            if (evt is { Type: "run.completed" })
+                            {
+                                lock (ctx.SyncLock)
+                                    ctx.StepOutputs[stepId] = evt.OutPut;
+                                record.OutputSnapshot = evt.OutPut?.ToString();
+                                break;
+                            }
+                        }
+                        return runId;
+                    }, retryConfig, stepId, ctx.InstanceId, stepCt);
+                }
+                else
+                {
+                    var runId = await _runClient.StartAsync(prompt, agentHandler.RunOptions, stepCt);
+                    _logger.LogDebug("RunClient 已启动: {InstanceId}/{Step}, RunId: {RunId}", ctx.InstanceId, stepId, runId);
+
+                    await foreach (var evt in _runClient.SubscribeEventsAsync(runId, stepCt))
+                    {
+                        if (evt is { Type: "run.completed" })
+                        {
+                            lock (ctx.SyncLock)
+                                ctx.StepOutputs[stepId] = evt.OutPut;
+                            record.OutputSnapshot = evt.OutPut?.ToString();
+                            break;
+                        }
                     }
                 }
 
+                MarkCompleted(record);
                 await SaveCheckpointAsync(instance, ct);
 
                 // 检查 ParallelJoin：若为并行子步骤，递减计数器而非自行推进
@@ -655,19 +791,80 @@ public class WorkflowEngine : IAsyncDisposable
                 record.TriggeredSteps = result.NextStepIds?.ToList();
                 await AdvanceAsync(instance, result, stepId, ct);
             }
+            catch (Exception ex) when (timeoutMonitor != null && timeoutMonitor.CancellationToken.IsCancellationRequested && !_shutdownCts.IsCancellationRequested)
+            {
+                // 超时异常优先处理
+                MarkFailed(record, $"步骤超时: {ex.Message}", ex.ToString());
+                record.FullStackTrace = ex.ToString();
+
+                var errorPolicy = stepDef != null ? YamlConfigConverter.ConvertErrorPolicy(stepDef.ErrorPolicy) : null;
+                if (errorPolicy != null)
+                {
+                    await _errorHandler.HandleErrorAsync(instance, record, ex, errorPolicy.Value, ct);
+
+                    if (errorPolicy.Value == ErrorPolicy.SkipFailedBranch)
+                    {
+                        // SkipFailedBranch：标记失败但不终止工作流，让 join 计数器自然递减
+                        if (await TryDecrementJoinAndMaybeAdvanceAsync(instance, stepId, ct))
+                            return;
+                        // 非并行上下文：降级为 FailFast
+                        _logger.LogWarning("步骤 {StepId} 配置了 SkipFailedBranch 但不在并行分支中，降级处理", stepId);
+                        ctx.IsRunning = false;
+                        CleanupInstanceResources(instance.Context.InstanceId);
+                        await SaveCheckpointAsync(instance, ct);
+                        return;
+                    }
+                }
+                else
+                {
+                    ctx.IsRunning = false;
+                    CleanupInstanceResources(instance.Context.InstanceId);
+                    await SaveCheckpointAsync(instance, ct);
+                }
+            }
+            catch (OperationCanceledException) when (_shutdownCts.IsCancellationRequested)
+            {
+                // Engine shutdown 触发的取消 — 不重试，静默退出
+                _logger.LogInformation("步骤 {StepId} 因 Engine 关闭而取消", stepId);
+                record.Status = StepStatus.Pending; // 重启后可恢复
+                await SaveCheckpointAsync(instance, ct);
+            }
             catch (Exception ex)
             {
                 MarkFailed(record, ex.Message, ex.ToString());
                 record.FullStackTrace = ex.ToString();
-                ctx.IsRunning = false;
-                await SaveCheckpointAsync(instance, ct);
+
+                var errorPolicy = stepDef != null ? YamlConfigConverter.ConvertErrorPolicy(stepDef.ErrorPolicy) : null;
+                if (errorPolicy != null)
+                {
+                    await _errorHandler.HandleErrorAsync(instance, record, ex, errorPolicy.Value, ct);
+
+                    if (errorPolicy.Value == ErrorPolicy.SkipFailedBranch)
+                    {
+                        // SkipFailedBranch：标记失败但不终止工作流，让 join 计数器自然递减
+                        if (await TryDecrementJoinAndMaybeAdvanceAsync(instance, stepId, ct))
+                            return;
+                        // 非并行上下文：降级为 FailFast
+                        _logger.LogWarning("步骤 {StepId} 配置了 SkipFailedBranch 但不在并行分支中，降级处理", stepId);
+                        ctx.IsRunning = false;
+                        CleanupInstanceResources(instance.Context.InstanceId);
+                        await SaveCheckpointAsync(instance, ct);
+                        return;
+                    }
+                }
+                else
+                {
+                    ctx.IsRunning = false;
+                    CleanupInstanceResources(instance.Context.InstanceId);
+                    await SaveCheckpointAsync(instance, ct);
+                }
             }
         }
         else
         {
             // Webhook 模式
             record.Status = StepStatus.Dispatched;
-            record.StartedAt = DateTime.UtcNow;
+            record.StartedAt = DateTime.Now;
 
             var payload = BuildWebhookPayload(ctx, stepId, agentHandler);
             record.InputSnapshot = payload;
@@ -703,6 +900,7 @@ public class WorkflowEngine : IAsyncDisposable
                 record.FullStackTrace = ex.ToString();
                 _logger.LogError(ex, "Webhook 发送失败: {InstanceId}/{Step}", ctx.InstanceId, stepId);
                 ctx.IsRunning = false;
+                CleanupInstanceResources(instance.Context.InstanceId);
                 await SaveCheckpointAsync(instance, ct);
             }
         }
@@ -713,10 +911,19 @@ public class WorkflowEngine : IAsyncDisposable
         string stepId,
         CodeStepHandler codeHandler,
         StepRecord record,
+        StepDefinition? stepDef,
         CancellationToken ct
     )
     {
         var ctx = instance.Context;
+
+        // 创建超时监控
+        var timeoutConfig = stepDef != null
+            ? YamlConfigConverter.ConvertTimeoutConfig(stepDef.Timeout, stepDef.TimeoutAction)
+            : null;
+        using var timeoutMonitor = timeoutConfig != null
+            ? new TimeoutMonitor(stepId, ctx.InstanceId, timeoutConfig, LoggerFactory.Create(b => { }).CreateLogger<TimeoutMonitor>())
+            : null;
 
         record.Status = StepStatus.Running;
         record.StartedAt = DateTime.UtcNow;
@@ -733,7 +940,115 @@ public class WorkflowEngine : IAsyncDisposable
 
         await SaveCheckpointAsync(instance, ct);
 
-        var result = await codeHandler.ExecuteAsync(ctx, ct);
+        // 构建超时关联的取消令牌
+        using var linkedCts = timeoutMonitor != null
+            ? CancellationTokenSource.CreateLinkedTokenSource(_shutdownCts.Token, timeoutMonitor.CancellationToken)
+            : null;
+        var stepCt = linkedCts?.Token ?? _shutdownCts.Token;
+
+        var shouldRetry = stepDef?.Retry != null;
+        StepResult result;
+
+        try
+        {
+            if (shouldRetry)
+            {
+                var retryConfig = YamlConfigConverter.ConvertRetryConfig(stepDef!.Retry!);
+                result = await _retryExecutor.ExecuteWithRetryAsync<StepResult>(async innerCt =>
+                {
+                    var r = await codeHandler.ExecuteAsync(ctx, innerCt);
+                    if (!r.IsSuccess)
+                        throw new StepRetryException(r.Error?.Message ?? "步骤失败", r.Error);
+                    return r;
+                }, retryConfig, stepId, ctx.InstanceId, stepCt);
+            }
+            else
+            {
+                result = await codeHandler.ExecuteAsync(ctx, stepCt);
+            }
+        }
+        catch (StepRetryException retryEx)
+        {
+            // 重试耗尽仍失败 — 转为 StepResult 交给后续 error_policy 处理
+            result = new StepResult { IsSuccess = false, Error = retryEx.InnerException ?? retryEx };
+        }
+        catch (Exception ex) when (timeoutMonitor != null && timeoutMonitor.CancellationToken.IsCancellationRequested && !_shutdownCts.IsCancellationRequested)
+        {
+            // 超时异常优先处理
+            MarkFailed(record, $"步骤超时: {ex.Message}", ex.ToString());
+            record.FullStackTrace = ex.ToString();
+
+            var errorPolicy = stepDef != null ? YamlConfigConverter.ConvertErrorPolicy(stepDef.ErrorPolicy) : null;
+            if (errorPolicy != null)
+            {
+                await _errorHandler.HandleErrorAsync(instance, record, ex, errorPolicy.Value, ct);
+
+                if (errorPolicy.Value == ErrorPolicy.SkipFailedBranch)
+                {
+                    // SkipFailedBranch：标记失败但不终止工作流，让 join 计数器自然递减
+                    if (await TryDecrementJoinAndMaybeAdvanceAsync(instance, stepId, ct))
+                        return;
+                    // 非并行上下文：降级为 FailFast
+                    _logger.LogWarning("步骤 {StepId} 配置了 SkipFailedBranch 但不在并行分支中，降级处理", stepId);
+                    ctx.IsRunning = false;
+                    instance.Status = "failed";
+                    CleanupInstanceResources(instance.Context.InstanceId);
+                    await SaveCheckpointAsync(instance, ct);
+                    return;
+                }
+                // FailFast / ContinueOnError：HandleErrorAsync 已完成处理
+            }
+            else
+            {
+                ctx.IsRunning = false;
+                instance.Status = "failed";
+                CleanupInstanceResources(instance.Context.InstanceId);
+                await SaveCheckpointAsync(instance, ct);
+            }
+            return;
+        }
+        catch (OperationCanceledException) when (_shutdownCts.IsCancellationRequested)
+        {
+            _logger.LogInformation("步骤 {StepId} 因 Engine 关闭而取消", stepId);
+            record.Status = StepStatus.Pending;
+            await SaveCheckpointAsync(instance, ct);
+            return;
+        }
+        catch (Exception ex)
+        {
+            MarkFailed(record, ex.Message, ex.ToString());
+            record.FullStackTrace = ex.ToString();
+
+            var errorPolicy = stepDef != null ? YamlConfigConverter.ConvertErrorPolicy(stepDef.ErrorPolicy) : null;
+            if (errorPolicy != null)
+            {
+                await _errorHandler.HandleErrorAsync(instance, record, ex, errorPolicy.Value, ct);
+
+                if (errorPolicy.Value == ErrorPolicy.SkipFailedBranch)
+                {
+                    // SkipFailedBranch：标记失败但不终止工作流，让 join 计数器自然递减
+                    if (await TryDecrementJoinAndMaybeAdvanceAsync(instance, stepId, ct))
+                        return;
+                    // 非并行上下文：降级为 FailFast
+                    _logger.LogWarning("步骤 {StepId} 配置了 SkipFailedBranch 但不在并行分支中，降级处理", stepId);
+                    ctx.IsRunning = false;
+                    instance.Status = "failed";
+                    CleanupInstanceResources(instance.Context.InstanceId);
+                    await SaveCheckpointAsync(instance, ct);
+                    return;
+                }
+                // FailFast / ContinueOnError：HandleErrorAsync 已完成处理
+            }
+            else
+            {
+                ctx.IsRunning = false;
+                instance.Status = "failed";
+                CleanupInstanceResources(instance.Context.InstanceId);
+                await SaveCheckpointAsync(instance, ct);
+            }
+            return;
+        }
+
         lock (ctx.SyncLock)
             ctx.StepOutputs[stepId] = result.Output;
         record.OutputSnapshot = result.Output?.ToString();
@@ -746,7 +1061,32 @@ public class WorkflowEngine : IAsyncDisposable
                 result.Error?.ToString()
             );
             record.FullStackTrace = result.Error?.ToString();
+
+            var errorPolicy = stepDef != null ? YamlConfigConverter.ConvertErrorPolicy(stepDef.ErrorPolicy) : null;
+            if (errorPolicy != null && result.Error != null)
+            {
+                await _errorHandler.HandleErrorAsync(instance, record, result.Error, errorPolicy.Value, ct);
+
+                if (errorPolicy.Value == ErrorPolicy.SkipFailedBranch)
+                {
+                    // SkipFailedBranch：标记失败但不终止工作流，让 join 计数器自然递减
+                    if (await TryDecrementJoinAndMaybeAdvanceAsync(instance, stepId, ct))
+                        return;
+                    // 非并行上下文：降级为 FailFast
+                    _logger.LogWarning("步骤 {StepId} 配置了 SkipFailedBranch 但不在并行分支中，降级处理", stepId);
+                    ctx.IsRunning = false;
+                    instance.Status = "failed";
+                    CleanupInstanceResources(instance.Context.InstanceId);
+                    await SaveCheckpointAsync(instance, ct);
+                    return;
+                }
+                // FailFast / ContinueOnError：HandleErrorAsync 已完成处理
+                return;
+            }
+
             ctx.IsRunning = false;
+            instance.Status = "failed";
+            CleanupInstanceResources(instance.Context.InstanceId);
             await SaveCheckpointAsync(instance, ct);
             return;
         }
@@ -772,10 +1112,51 @@ public class WorkflowEngine : IAsyncDisposable
         }
         else
         {
-            instance.Status = "completed";
-            instance.CompletedAt = DateTime.UtcNow;
-            await SaveCheckpointAsync(instance, ct);
+            // 自动路由：handler 未指定下一步时，从 YAML 元数据推导
+            var autoNextIds = ResolveAutoNextSteps(instance, stepId);
+            if (autoNextIds is { Count: > 0 })
+            {
+                result.NextStepIds = autoNextIds;
+                record.TriggeredSteps = new List<string>(autoNextIds);
+                foreach (var nextId in autoNextIds)
+                {
+                    var nextRecord = GetOrCreateRecord(instance, nextId);
+                    nextRecord.TriggeredBy = stepId;
+                }
+                await SaveCheckpointAsync(instance, ct);
+                await AdvanceAsync(instance, result, stepId, ct);
+            }
+            else
+            {
+                instance.Status = "completed";
+                instance.CompletedAt = DateTime.UtcNow;
+                await SaveCheckpointAsync(instance, ct);
+            }
         }
+    }
+
+    /// <summary>
+    /// 从 YAML 步骤定义推导自动下一步：优先 next_step_id，其次 depends_on 反向匹配。
+    /// </summary>
+    private List<string>? ResolveAutoNextSteps(WorkflowInstance instance, string completedStepId)
+    {
+        var stepDef = GetStepDefinition(instance.WorkflowName, completedStepId);
+        if (stepDef == null) return null;
+
+        // 优先使用 step 自身声明的 next_step_id
+        if (!string.IsNullOrEmpty(stepDef.NextStepId))
+            return [stepDef.NextStepId];
+
+        // 其次扫描同工作流中所有 depends_on 指向本步骤的 step
+        var prefix = (instance.WorkflowName ?? "__default__") + ":";
+        var dependentIds = _stepDefinitions
+            .Where(kvp => kvp.Key.StartsWith(prefix))
+            .Select(kvp => kvp.Value)
+            .Where(def => def.DependsOn != null && def.DependsOn.Contains(completedStepId))
+            .Select(def => def.Id)
+            .ToList();
+
+        return dependentIds.Count > 0 ? dependentIds : null;
     }
 
     private async Task ExecuteHumanApprovalStepAsync(
@@ -783,10 +1164,19 @@ public class WorkflowEngine : IAsyncDisposable
         string stepId,
         HumanApprovalStepHandler approvalHandler,
         StepRecord record,
+        StepDefinition? stepDef,
         CancellationToken ct
     )
     {
         var ctx = instance.Context;
+
+        // 创建超时监控
+        var timeoutConfig = stepDef != null
+            ? YamlConfigConverter.ConvertTimeoutConfig(stepDef.Timeout, stepDef.TimeoutAction)
+            : null;
+        using var timeoutMonitor = timeoutConfig != null
+            ? new TimeoutMonitor(stepId, ctx.InstanceId, timeoutConfig, LoggerFactory.Create(b => { }).CreateLogger<TimeoutMonitor>())
+            : null;
 
         record.Status = StepStatus.Dispatched;
         record.StartedAt = DateTime.UtcNow;
@@ -819,6 +1209,7 @@ public class WorkflowEngine : IAsyncDisposable
                 ctx.PendingStepIds.Remove(stepId);
             ctx.IsRunning = false;
             _logger.LogError(ex, "审批分发失败: {InstanceId}/{Step}", ctx.InstanceId, stepId);
+            CleanupInstanceResources(instance.Context.InstanceId);
             await SaveCheckpointAsync(instance, ct);
         }
     }
@@ -967,10 +1358,175 @@ public class WorkflowEngine : IAsyncDisposable
             );
             instance.Status = "failed";
             await SaveCheckpointAsync(instance, ct);
+            CleanupInstanceResources(instanceId);
             return;
         }
 
         await AdvanceAsync(instance, result, stepId, ct);
+    }
+
+    private async Task ExecuteSubWorkflowStepAsync(
+        WorkflowInstance parentInstance,
+        string stepId,
+        SubWorkflowStepHandler subWorkflowHandler,
+        StepRecord record,
+        StepDefinition? stepDef,
+        CancellationToken ct
+    )
+    {
+        var parentCtx = parentInstance.Context;
+
+        // 创建超时监控（监控子工作流整体执行时间）
+        var timeoutConfig = stepDef != null
+            ? YamlConfigConverter.ConvertTimeoutConfig(stepDef.Timeout, stepDef.TimeoutAction)
+            : null;
+        using var timeoutMonitor = timeoutConfig != null
+            ? new TimeoutMonitor(stepId, parentCtx.InstanceId, timeoutConfig, LoggerFactory.Create(b => { }).CreateLogger<TimeoutMonitor>())
+            : null;
+
+        record.Status = StepStatus.Running;
+        record.StartedAt = DateTime.UtcNow;
+
+        // 构建子工作流输入
+        var subWorkflowInput = subWorkflowHandler.BuildSubWorkflowInput(parentCtx);
+        record.InputSnapshot = JsonSerializer.Serialize(new
+        {
+            subWorkflowName = subWorkflowHandler.SubWorkflowName,
+            subWorkflowVersion = subWorkflowHandler.SubWorkflowVersion,
+            input = subWorkflowInput
+        });
+
+        await SaveCheckpointAsync(parentInstance, ct);
+
+        try
+        {
+            if (_workflowRegistry == null)
+            {
+                throw new InvalidOperationException(
+                    "子工作流执行需要注册WorkflowRegistry。请在构造函数中提供WorkflowRegistry参数。");
+            }
+
+            // 获取子工作流定义
+            var workflowName = subWorkflowHandler.SubWorkflowName;
+            var workflowVersion = subWorkflowHandler.SubWorkflowVersion;
+
+            var definition = workflowVersion != null
+                ? _workflowRegistry.GetByVersion(workflowName, workflowVersion)
+                : _workflowRegistry.Get(workflowName);
+
+            // 创建子工作流上下文
+            var subWorkflowContext = new WorkflowContext
+            {
+                InstanceId = $"sub-{parentCtx.InstanceId}-{stepId}",
+                InitialInput = subWorkflowInput
+            };
+
+            _logger.LogInformation(
+                "启动子工作流: {ParentInstanceId}/{StepId} → {SubWorkflowInstanceId} ({WorkflowName}:{Version})",
+                parentCtx.InstanceId,
+                stepId,
+                subWorkflowContext.InstanceId,
+                workflowName,
+                workflowVersion ?? "latest"
+            );
+
+            // 记录父子映射关系
+            var mappingKey = $"{parentCtx.InstanceId}:{stepId}";
+            _subWorkflowMappings[mappingKey] = subWorkflowContext.InstanceId;
+
+            // 创建新的引擎实例来执行子工作流(共享相同的handlers和registry)
+            var subWorkflowEngine = new WorkflowEngine(
+                _handlers.Values,
+                _webhookClient,
+                _runClient,
+                _logger,
+                _stateStore,
+                _workflowRegistry
+            );
+
+            // 异步启动子工作流并等待完成
+            var subWorkflowTask = Task.Run(async () =>
+            {
+                try
+                {
+                    // 从定义中获取入口步骤(第一个步骤)
+                    var entryStepId = definition.Steps.FirstOrDefault()?.Id;
+                    if (entryStepId == null)
+                        throw new InvalidOperationException($"工作流 {workflowName} 没有定义步骤");
+
+                    await subWorkflowEngine.StartAsync(entryStepId, subWorkflowContext, ct);
+
+                    // 使用 500ms 间隔轮询等待子工作流完成（相比 100ms 减少 80% 的轮询次数）
+                    while (true)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        
+                        var subInstance = subWorkflowEngine.GetInstance(subWorkflowContext.InstanceId);
+                        if (subInstance == null || !subInstance.Context.IsRunning)
+                            return subInstance;
+
+                        await Task.Delay(500, ct);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "子工作流执行失败: {SubWorkflowInstanceId}", subWorkflowContext.InstanceId);
+                    throw;
+                }
+                finally
+                {
+                    await subWorkflowEngine.DisposeAsync();
+                }
+            }, ct);
+
+            var subInstance = await subWorkflowTask;
+
+            if (subInstance == null || subInstance.Status != "completed")
+            {
+                throw new InvalidOperationException(
+                    $"子工作流执行失败,状态: {subInstance?.Status ?? "unknown"}");
+            }
+
+            // 提取子工作流输出并映射回父上下文
+            var subWorkflowOutput = new Dictionary<string, object?>();
+            foreach (var kvp in subInstance.Context.StepOutputs)
+            {
+                subWorkflowOutput[kvp.Key] = kvp.Value;
+            }
+
+            subWorkflowHandler.MapSubWorkflowOutput(parentCtx, subWorkflowOutput);
+
+            // 记录子工作流输出
+            lock (parentCtx.SyncLock)
+                parentCtx.StepOutputs[stepId] = subWorkflowOutput;
+
+            record.OutputSnapshot = JsonSerializer.Serialize(subWorkflowOutput);
+            MarkCompleted(record);
+
+            _logger.LogInformation(
+                "子工作流完成: {ParentInstanceId}/{StepId} ← {SubWorkflowInstanceId}",
+                parentCtx.InstanceId,
+                stepId,
+                subWorkflowContext.InstanceId
+            );
+
+            // 检查 ParallelJoin
+            if (await TryDecrementJoinAndMaybeAdvanceAsync(parentInstance, stepId, ct))
+                return;
+
+            // 推进到下一步
+            var result = await subWorkflowHandler.ExecuteAsync(parentCtx, ct);
+            record.TriggeredSteps = result.NextStepIds?.ToList();
+            await AdvanceAsync(parentInstance, result, stepId, ct);
+        }
+        catch (Exception ex)
+        {
+            MarkFailed(record, ex.Message, ex.ToString());
+            record.FullStackTrace = ex.ToString();
+            parentCtx.IsRunning = false;
+            CleanupInstanceResources(parentInstance.Context.InstanceId);
+            await SaveCheckpointAsync(parentInstance, ct);
+        }
     }
 
     private async Task ExecuteDelayStepAsync(
@@ -978,10 +1534,20 @@ public class WorkflowEngine : IAsyncDisposable
         string stepId,
         DelayStepHandler delayHandler,
         StepRecord record,
+        StepDefinition? stepDef,
         CancellationToken ct
     )
     {
         var ctx = instance.Context;
+
+        // Delay 步骤：delay 本身是一种 timeout，此处仅记录配置
+        // 超时监控在 delay 本身完成前不触发，仅用于外部超时覆盖
+        var timeoutConfig = stepDef != null
+            ? YamlConfigConverter.ConvertTimeoutConfig(stepDef.Timeout, stepDef.TimeoutAction)
+            : null;
+        using var timeoutMonitor = timeoutConfig != null
+            ? new TimeoutMonitor(stepId, ctx.InstanceId, timeoutConfig, LoggerFactory.Create(b => { }).CreateLogger<TimeoutMonitor>())
+            : null;
 
         record.Status = StepStatus.Running;
         record.StartedAt = DateTime.UtcNow;
@@ -1012,6 +1578,7 @@ public class WorkflowEngine : IAsyncDisposable
                 instance.Status = "completed";
                 instance.CompletedAt = DateTime.UtcNow;
                 await SaveCheckpointAsync(instance, ct);
+                CleanupInstanceResources(instance.Context.InstanceId);
             }
         }
         catch (Exception ex)
@@ -1020,6 +1587,7 @@ public class WorkflowEngine : IAsyncDisposable
             record.FullStackTrace = ex.ToString();
             ctx.IsRunning = false;
             await SaveCheckpointAsync(instance, ct);
+            CleanupInstanceResources(instance.Context.InstanceId);
         }
     }
 
@@ -1038,6 +1606,7 @@ public class WorkflowEngine : IAsyncDisposable
             instance.Status = "completed";
             instance.CompletedAt = DateTime.UtcNow;
             _logger.LogInformation("工作流完成: {InstanceId}", instance.Context.InstanceId);
+            CleanupInstanceResources(instance.Context.InstanceId);
             await SaveCheckpointAsync(instance, ct);
             return;
         }
@@ -1130,7 +1699,7 @@ public class WorkflowEngine : IAsyncDisposable
         try
         {
             instance.LastHeartbeat = DateTime.UtcNow;
-            var checkpoint = WorkflowCheckpoint.FromInstance(instance);
+            var checkpoint = WorkflowCheckpoint.FromInstance(instance, new Dictionary<string, string>(_subWorkflowMappings));
             await _stateStore.SaveAsync(checkpoint, ct);
         }
         catch (Exception ex)
@@ -1164,20 +1733,59 @@ public class WorkflowEngine : IAsyncDisposable
         }
     }
 
-    /// <summary>启动时预建所有步骤的 Pending 记录</summary>
-    private void InitializeRecords(WorkflowInstance instance)
+    /// <summary>启动时预建工作流步骤的 Pending 记录。返回实际步骤数。</summary>
+    private int InitializeRecords(WorkflowInstance instance, string? workflowName)
     {
-        foreach (var (stepId, handler) in _handlers)
+        // 获取该工作流中定义的步骤 ID 集合
+        var workflowStepIds = new HashSet<string>();
+        if (workflowName != null)
         {
+            var prefix = workflowName + ":";
+            foreach (var kvp in _stepDefinitions)
+            {
+                if (kvp.Key.StartsWith(prefix))
+                    workflowStepIds.Add(kvp.Value.Id);
+            }
+        }
+
+        // 如果无定义，回退到所有注册 handler（向后兼容）
+        if (workflowStepIds.Count == 0)
+        {
+            foreach (var (stepId, _) in _handlers)
+                workflowStepIds.Add(stepId);
+        }
+
+        foreach (var stepId in workflowStepIds)
+        {
+            var stepType = _handlers.TryGetValue(stepId, out _) ? GetStepType(stepId) : "???";
             instance.StepRecords.Add(
                 new StepRecord
                 {
                     StepId = stepId,
-                    StepType = GetStepType(stepId),
+                    StepType = stepType,
                     Status = StepStatus.Pending,
                 }
             );
         }
+
+        return workflowStepIds.Count;
+    }
+
+    /// <summary>清理实例相关资源：移除 _joinTrackers 和 _subWorkflowMappings 中属于该实例的条目</summary>
+    private void CleanupInstanceResources(string instanceId)
+    {
+        _joinTrackers.TryRemove(instanceId, out _);
+
+        // 移除属于该实例的子工作流映射（键格式为 "parentInstanceId:stepId"）
+        // 先快照再删除，避免遍历期间集合被并发修改
+        var prefix = $"{instanceId}:";
+        var keysToRemove = _subWorkflowMappings.Keys
+            .Where(key => key.StartsWith(prefix))
+            .ToList();
+        foreach (var key in keysToRemove)
+            _subWorkflowMappings.TryRemove(key, out _);
+
+        _logger.LogDebug("已清理实例资源: {InstanceId}", instanceId);
     }
 
     /// <summary>标记步骤完成</summary>
@@ -1262,12 +1870,12 @@ public class WorkflowEngine : IAsyncDisposable
                 return true;
             }
 
-            _joinTrackers.TryRemove(instance.Context.InstanceId, out _);
             var anyDownstreamId = tracker.JoinDownstreamStepId;
 
             if (string.IsNullOrEmpty(anyDownstreamId))
             {
                 // ParallelAny（无 JoinDownstream）：首个完成即标记，让步骤自行推进
+                // 注意：不删除 tracker，保留 AnyTriggered=1 状态，防止后续步骤重复推进
                 _logger.LogInformation(
                     "ParallelAny 完成: {InstanceId} (由 {Step} 触发)",
                     instance.Context.InstanceId,
@@ -1275,6 +1883,8 @@ public class WorkflowEngine : IAsyncDisposable
                 );
                 return false; // 让调用方正常推进
             }
+
+            _joinTrackers.TryRemove(instance.Context.InstanceId, out _);
 
             _logger.LogInformation(
                 "ParallelJoinAny 完成: {InstanceId} → {Downstream} (由 {Step} 触发)",

@@ -12,6 +12,96 @@ public class WorkflowCheckpoint
     private const string TypePropertyName = "$type";
     private const string ValuePropertyName = "$value";
 
+    /// <summary>
+    /// 类型别名映射表 - 用于解决程序集版本变更导致的反序列化问题。
+    /// 格式: "简短别名" -> "完整类型名"
+    /// </summary>
+    private static readonly Dictionary<string, string> TypeAliasMap = new()
+    {
+        // 常用类型的简短别名
+        { "string", typeof(string).AssemblyQualifiedName! },
+        { "int", typeof(int).AssemblyQualifiedName! },
+        { "long", typeof(long).AssemblyQualifiedName! },
+        { "double", typeof(double).AssemblyQualifiedName! },
+        { "bool", typeof(bool).AssemblyQualifiedName! },
+        { "datetime", typeof(DateTime).AssemblyQualifiedName! },
+        { "timespan", typeof(TimeSpan).AssemblyQualifiedName! },
+        { "guid", typeof(Guid).AssemblyQualifiedName! },
+        { "decimal", typeof(decimal).AssemblyQualifiedName! },
+        
+        // 项目内部类型（使用简化的命名空间）
+        { "workflowcontext", "HermesAgent.Sdk.WorkflowChain.WorkflowContext" },
+        { "steprecord", "HermesAgent.Sdk.WorkflowChain.StepRecord" },
+        { "stepstatus", "HermesAgent.Sdk.WorkflowChain.StepStatus" },
+    };
+
+    /// <summary>
+    /// FullName→alias 反查表（懒加载 + 线程安全），避免 GetSimplifiedTypeName 每次遍历整个 TypeAliasMap。
+    /// RegisterTypeAlias 时重建 Lazy 实例确保失效。
+    /// </summary>
+    private static Lazy<Dictionary<string, string>> _fullNameToAlias = new(BuildAliasMap, LazyThreadSafetyMode.ExecutionAndPublication);
+
+    private static Dictionary<string, string> FullNameToAliasMap => _fullNameToAlias.Value;
+
+    private static Dictionary<string, string> BuildAliasMap()
+    {
+        var map = new Dictionary<string, string>();
+        foreach (var kvp in TypeAliasMap)
+        {
+            // TypeAliasMap 值可能是 AssemblyQualifiedName 或简短命名空间
+            // 提取 FullName 部分（第一个逗号前）作为反查键
+            var value = kvp.Value;
+            var commaIdx = value.IndexOf(',');
+            var fullNameKey = commaIdx > 0 ? value.Substring(0, commaIdx).Trim() : value;
+            map[fullNameKey] = kvp.Key;
+        }
+        return map;
+    }
+
+    /// <summary>
+    /// 注册自定义类型别名。
+    /// </summary>
+    /// <param name="alias">简短别名</param>
+    /// <param name="typeName">完整类型名（AssemblyQualifiedName）</param>
+    public static void RegisterTypeAlias(string alias, string typeName)
+    {
+        TypeAliasMap[alias.ToLowerInvariant()] = typeName;
+        // 重建 Lazy 实例，下次访问时重新构建反查表
+        _fullNameToAlias = new Lazy<Dictionary<string, string>>(BuildAliasMap, LazyThreadSafetyMode.ExecutionAndPublication);
+    }
+
+    /// <summary>
+    /// 根据别名或类型名解析类型。
+    /// </summary>
+    private static Type? ResolveType(string typeName)
+    {
+        // 先尝试直接解析
+        var type = Type.GetType(typeName, throwOnError: false);
+        if (type != null)
+            return type;
+
+        // 尝试从别名映射表中查找
+        var lowerName = typeName.ToLowerInvariant();
+        if (TypeAliasMap.TryGetValue(lowerName, out var mappedTypeName))
+        {
+            type = Type.GetType(mappedTypeName, throwOnError: false);
+            if (type != null)
+                return type;
+        }
+
+        // 尝试忽略程序集版本信息
+        var commaIndex = typeName.IndexOf(',');
+        if (commaIndex > 0)
+        {
+            var simpleName = typeName.Substring(0, commaIndex).Trim();
+            type = Type.GetType(simpleName, throwOnError: false);
+            if (type != null)
+                return type;
+        }
+
+        return null;
+    }
+
     /// <summary>工作流实例唯一标识</summary>
     public string InstanceId { get; set; } = "";
 
@@ -51,8 +141,11 @@ public class WorkflowCheckpoint
     /// <summary>所有步骤的执行档案</summary>
     public List<StepRecord> StepRecords { get; set; } = new();
 
+    /// <summary>子工作流映射："parentInstanceId:subWorkflowStepId" → "subWorkflowInstanceId"</summary>
+    public Dictionary<string, string> SubWorkflowMappings { get; set; } = new();
+
     /// <summary>从 WorkflowInstance 创建检查点</summary>
-    public static WorkflowCheckpoint FromInstance(WorkflowInstance instance)
+    public static WorkflowCheckpoint FromInstance(WorkflowInstance instance, Dictionary<string, string>? subWorkflowMappings = null)
     {
         var ctx = instance.Context;
 
@@ -89,6 +182,8 @@ public class WorkflowCheckpoint
                 InputSnapshot = r.InputSnapshot,
                 OutputSnapshot = r.OutputSnapshot,
             }).ToList(),
+
+            SubWorkflowMappings = subWorkflowMappings ?? new(),
         };
     }
 
@@ -162,11 +257,49 @@ public class WorkflowCheckpoint
             ? element.Clone()
             : JsonSerializer.SerializeToElement(value, runtimeType);
 
+        // 使用简化的类型名（不包含程序集版本信息）
+        var simplifiedTypeName = GetSimplifiedTypeName(runtimeType);
+
         return JsonSerializer.SerializeToElement(new TypedValueEnvelope
         {
-            Type = runtimeType.AssemblyQualifiedName,
+            Type = simplifiedTypeName,
             Value = payload,
         });
+    }
+
+    /// <summary>
+    /// 获取简化的类型名（不含程序集版本信息）。
+    /// </summary>
+    private static string GetSimplifiedTypeName(Type type)
+    {
+        // 使用反查表 O(1) 查找，替代遍历 O(n)
+        if (type.FullName != null && FullNameToAliasMap.TryGetValue(type.FullName, out var alias))
+            return alias;
+
+        // 对于其他类型，使用 AssemblyQualifiedName 确保正确反序列化
+        var assemblyQualifiedName = type.AssemblyQualifiedName;
+        if (string.IsNullOrEmpty(assemblyQualifiedName))
+            return type.FullName ?? type.Name;
+
+        // 包含 [[ 说明是复杂泛型类型（如 Dictionary`2[[...]]），
+        // 剥离版本信息会导致 Type.GetType() 无法解析，保留完整信息
+        if (assemblyQualifiedName.Contains("[["))
+            return assemblyQualifiedName;
+
+        // 移除程序集版本、文化、公钥等信息，只保留 "命名空间.类名, 程序集名"
+        var commaIndex = assemblyQualifiedName.IndexOf(',');
+        if (commaIndex > 0)
+        {
+            var typeNamePart = assemblyQualifiedName.Substring(0, commaIndex);
+            var assemblyNamePart = assemblyQualifiedName.Substring(commaIndex + 1);
+
+            // 提取程序集简单名称（第一个逗号之前）
+            var assemblySimpleName = assemblyNamePart.Split(',')[0].Trim();
+
+            return $"{typeNamePart}, {assemblySimpleName}";
+        }
+
+        return assemblyQualifiedName;
     }
 
     private static object? RestoreValue(JsonElement element)
@@ -195,9 +328,14 @@ public class WorkflowCheckpoint
             return true;
         }
 
-        var runtimeType = Type.GetType(typeName, throwOnError: false);
+        // 使用新的类型解析机制（支持别名和版本容错）
+        var runtimeType = ResolveType(typeName);
         if (runtimeType == null)
+        {
+            // 如果无法解析类型，记录警告并尝试作为 JsonElement 返回
+            System.Diagnostics.Debug.WriteLine($"警告: 无法解析类型 '{typeName}'，将作为原始 JSON 返回");
             return false;
+        }
 
         if (runtimeType == typeof(JsonElement))
         {

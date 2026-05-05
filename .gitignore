@@ -19,6 +19,8 @@ obj/
 openspec
 .qoder
 .dotnet
+.lingma
+.claude
  
 
 # ===== 备份文件 =====
@@ -28,3 +30,7 @@ document
 .tmp-stage2-segment.txt
 debug.log
 tests-build.log
+samples/WorkflowApprovalDemo/workflow-approval-demo.db
+*.db-shm
+*.db-wal
+docs
