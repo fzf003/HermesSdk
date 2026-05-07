@@ -15,7 +15,7 @@ public class HermesRunClient : IHermesRunClient
 {
     private readonly HttpClient _httpClient;
     private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping, WriteIndented = true };
-
+    private readonly ILogger<HermesRunClient> _logger;
     /// <summary>
     /// 初始化 HermesRunClient 实例。
     /// </summary>
@@ -23,6 +23,8 @@ public class HermesRunClient : IHermesRunClient
     public HermesRunClient(HttpClient httpClient)
     {
         _httpClient = httpClient;
+
+        _logger = LoggerFactory.Create(c => c.SetMinimumLevel(level: LogLevel.Debug)).CreateLogger<HermesRunClient>();
     }
 
     /// <summary>
@@ -74,7 +76,8 @@ public class HermesRunClient : IHermesRunClient
 
  
             var data = line[6..];
- 
+            this._logger.LogDebug(data);
+            Console.WriteLine(data);
             var evt = JsonSerializer.Deserialize<RunEvent>(data, _jsonOptions);
             if (evt is not null)
             {
@@ -106,18 +109,19 @@ public class HermesRunClient : IHermesRunClient
 
         await foreach (var evt in SubscribeEventsAsync(runId, ct))
         {
-            if (evt.Type == "completion")
+            if (evt.Type == "run.completion")
             {
                 if (evt.Data != null && evt.Data.TryGetValue("content", out var content))
                     output = content?.ToString();
                 status = "completed";
             }
-            else if (evt.Type == "error")
+            else if (evt.Type == "run.error")
             {
                 if (evt.Data != null && evt.Data.TryGetValue("message", out var message))
                     errorMessage = message?.ToString();
                 status = "failed";
             }
+
         }
 
         return result with { Output = output, Status = status, ErrorMessage = errorMessage };

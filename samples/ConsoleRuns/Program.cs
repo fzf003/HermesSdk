@@ -126,26 +126,31 @@ class Program
     {
         switch (evt.Type)
         {
-            case "run_started":
+            case "run.started":
                 var model = evt.Data?.GetValueOrDefault("model")?.ToString() ?? "?";
                 Console.WriteLine($"模型: {model}");
                 break;
-            case "tool_started":
+            case "tool.started":
                 var toolName = evt.Data?.GetValueOrDefault("tool_name")?.ToString() ?? "?";
                 Console.WriteLine(toolName);
                 break;
-            case "tool_completed":
+            case "tool.completed":
                 var compName = evt.Data?.GetValueOrDefault("tool_name")?.ToString() ?? "?";
                 var duration = evt.Data?.GetValueOrDefault("duration_ms")?.ToString() ?? "?";
                 Console.WriteLine($"{compName} (耗时 {duration}ms)");
                 break;
-            case "reasoning":
-                var reasoning = evt.Data?.GetValueOrDefault("content")?.ToString() ?? "";
+            case "reasoning.available":
+                var reasoning = evt.Text; // evt.Data?.GetValueOrDefault("content")?.ToString() ?? "";
                 Console.WriteLine(Truncate(reasoning, 100));
                 break;
             case "completion":
                 var content = evt.Data?.GetValueOrDefault("content")?.ToString() ?? "";
                 Console.WriteLine(content);
+                break;
+
+            case "run.completed":
+                
+                Console.WriteLine(evt.OutPut);
                 break;
             case "error":
                 var msg = evt.Data?.GetValueOrDefault("message")?.ToString() ?? "未知错误";

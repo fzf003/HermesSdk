@@ -12,4 +12,9 @@ public record RunEvent
 
     [JsonPropertyName("output")]
     public string OutPut { get; init; } = string.Empty;
+    /// <summary>
+    /// Ë¼¿¼Á´
+    /// </summary>
+    [JsonPropertyName("text")]
+    public string Text { get; init; } = string.Empty;
 }
