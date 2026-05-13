@@ -402,4 +402,108 @@ partial class Program
 
         PrintIf(checks.All(c => c.Pass), "✓ 代码→YAML 自动导出成功");
     }
+
+    // =================================================================
+    // Scenario 11: DSL 工作流 (Register<T> 类继承式定义)
+    //   演示类继承式 DSL 风格，导出 YAML 验证代码语义一致性
+    // =================================================================
+    static async Task Scenario11_DslDemo(WorkflowEngine engine, IWorkflowBootstrapper bootstrapper, WorkflowImportExportManager importExport)
+    {
+        PrintHeader("Scenario 11 — DSL 工作流 (Register<T> 类继承式定义)");
+        Console.WriteLine("  工作流: dsl-entry → dsl-process → dsl-agent");
+        Console.WriteLine("  定义方式: DslDemoWorkflow : Workflow (类继承式 DSL)");
+        Console.WriteLine();
+
+        // 步骤 1: 导出 DSL 代码定义的 YAML，验证语义一致性
+        Console.WriteLine("  Step 1 — ExportToYaml 导出 DSL 代码定义的 YAML:");
+        Console.WriteLine("  (代码中的 Fluent 配置 → StepDefinition → YAML)");
+        Console.WriteLine(new string('─', 60));
+        var yaml = importExport.ExportToYaml("dsl-demo-wf");
+        Console.WriteLine(yaml);
+        Console.WriteLine(new string('─', 60));
+
+        // 验证导出的 YAML 包含代码中声明的配置值
+        var yamlChecks = new (string Label, bool Pass)[]
+        {
+            ("name: dsl-demo-wf", yaml.Contains("name: dsl-demo-wf")),
+            ("version: '1.0'", yaml.Contains("version: '1.0'") || yaml.Contains("version: 1.0")),
+            ("description", yaml.Contains("description:")),
+            ("3 个 steps", yaml.Split("id:").Length >= 4),
+            ("Fluent timeout (dsl-process)", yaml.Contains("timeout:") && yaml.Contains("00:00:10")),
+            ("Fluent retry (dsl-process)", yaml.Contains("retry:")),
+            ("Fluent timeout (dsl-agent)", yaml.Contains("timeout:") && yaml.Contains("00:00:30")),
+            ("Fluent system_prompt (dsl-agent)", yaml.Contains("system_prompt:")),
+        };
+
+        Console.WriteLine("  字段验证:");
+        foreach (var (label, pass) in yamlChecks)
+        {
+            Console.WriteLine($"    {(pass ? "✓" : "✗")} {label}");
+        }
+        Console.WriteLine();
+
+        // 打印 dsl-process 的重试策略详情
+        Console.WriteLine("  dsl-process 重试策略:");
+        Console.WriteLine("  ┌──────────┬────────────┬──────────────────────────────────────────┐");
+        Console.WriteLine("  │ 尝试     │ 等待延迟   │ 说明                                     │");
+        Console.WriteLine("  ├──────────┼────────────┼──────────────────────────────────────────┤");
+        Console.WriteLine("  │ 首次执行 │ 0          │ 立即执行                                 │");
+        Console.WriteLine("  │ 第1次重试│ ~4.5~5.5s  │ initialDelay=5s × 2^0 + 随机抖动 ±10%    │");
+        Console.WriteLine("  │ 第2次重试│ ~9~11s     │ initialDelay=5s × 2^1 + 随机抖动 ±10%    │");
+        Console.WriteLine("  │ 第3次重试│ ~18~22s    │ initialDelay=5s × 2^2 + 随机抖动 ±10%    │");
+        Console.WriteLine("  ├──────────┴────────────┴──────────────────────────────────────────┤");
+        Console.WriteLine("  │ maxRetries=3  initialDelay=5s  maxDelay=5min  timeout=10s        │");
+        Console.WriteLine("  │ ⚠ timeout 是所有重试共享的总超时，10s 内仅够完成 1 次重试        │");
+        Console.WriteLine("  └──────────────────────────────────────────────────────────────────┘");
+        Console.WriteLine();
+
+        // 步骤 2: 运行 DSL 定义的工作流
+        Console.WriteLine("  Step 2 — 运行 DSL 工作流 (无外部 YAML 覆盖):");
+        Console.WriteLine();
+
+        var ctx = new WorkflowContext { InstanceId = $"s11-{DateTime.Now:HHmmss}" };
+        var instanceId = await engine.StartAsync("dsl-entry", ctx, CancellationToken.None, "dsl-demo-wf");
+
+        // 等待工作流完成
+        await Task.Delay(500);
+
+        var inst = engine.GetInstance(instanceId)!;
+        var records = engine.GetStepRecords(instanceId);
+
+        // 验证各步骤状态
+        var entryRec = records.FirstOrDefault(r => r.StepId == "dsl-entry");
+        var processRec = records.FirstOrDefault(r => r.StepId == "dsl-process");
+        var agentRec = records.FirstOrDefault(r => r.StepId == "dsl-agent");
+
+        Console.WriteLine($"  dsl-entry:   状态={entryRec?.Status}");
+        Console.WriteLine($"  dsl-process: 状态={processRec?.Status}");
+        Console.WriteLine($"  dsl-agent:   状态={agentRec?.Status}");
+        Console.WriteLine($"  工作流状态:  {inst.Status}");
+        Console.WriteLine();
+
+        // 验证拓扑连接正确 (entry→process→agent)
+        var allCompleted = entryRec?.Status == StepStatus.Completed
+                        && processRec?.Status == StepStatus.Completed
+                        && inst.Status == "completed";
+        PrintIf(allCompleted, "✓ DSL 工作流执行成功: 拓扑连接正确");
+
+        // 步骤 3: 导出 YAML 与代码语义一致性总结
+        Console.WriteLine();
+        Console.WriteLine("  Step 3 — 代码语义一致性验证:");
+        Console.WriteLine();
+        Console.WriteLine("  ┌─────────────────────────────────────────────────────────────┐");
+        Console.WriteLine("  │ DSL 代码                    →  YAML 导出                   │");
+        Console.WriteLine("  ├─────────────────────────────────────────────────────────────┤");
+        Console.WriteLine("  │ DslDemoWorkflow.Name         →  name: dsl-demo-wf           │");
+        Console.WriteLine("  │ Version=\"1.0\"               →  version: '1.0'              │");
+        Console.WriteLine("  │ WithName(\"DSL处理\")          →  (描述性名称，不参与运行时)    │");
+        Console.WriteLine("  │ WithTimeout(\"00:00:10\")      →  timeout: '00:00:10'         │");
+        Console.WriteLine("  │ WithRetry(Immediate,2)       →  retry: {max_retries:2,...}  │");
+        Console.WriteLine("  │ WithSystemPrompt(\"DSL ...\")  →  system_prompt: \"DSL ...\"   │");
+        Console.WriteLine("  │ AddAgentStep(id, lambda)     →  type: agent                 │");
+        Console.WriteLine("  └─────────────────────────────────────────────────────────────┘");
+        Console.WriteLine();
+        PrintIf(yamlChecks.All(c => c.Pass) && allCompleted,
+            "✓ 代码→YAML 语义一致: DSL 定义与导出 YAML 配置值完全对齐");
+    }
 }

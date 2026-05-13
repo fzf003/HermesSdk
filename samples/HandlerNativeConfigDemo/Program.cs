@@ -1,4 +1,5 @@
 using HermesAgent.Sdk.Extensions;
+using HermesAgent.Sdk.WorkflowChain.Dsl;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -48,9 +49,10 @@ partial class Program
             Console.WriteLine("  8. IWorkflowBootstrapper 两步注册演示");
             Console.WriteLine("  9. Builder Fluent API 配置 (3层优先级, 4步工作流)");
             Console.WriteLine(" 10. 导出代码定义的 YAML (AddWorkflow → ExportToYaml)");
-            Console.WriteLine(" 11. 退出");
+            Console.WriteLine(" 11. DSL 工作流 (Register&lt;T&gt; 类继承式定义)");
+            Console.WriteLine(" 12. 退出");
             Console.WriteLine("══════════════════════════════════════════════════");
-            Console.Write("请选择 [1-11]: ");
+            Console.Write("请选择 [1-12]: ");
 
             var choice = Console.ReadLine();
             switch (choice)
@@ -86,6 +88,9 @@ partial class Program
                     await Scenario10_ExportYamlFromCode(importExport);
                     break;
                 case "11":
+                    await Scenario11_DslDemo(engine, bootstrapper, importExport);
+                    break;
+                case "12":
                     Console.WriteLine("退出...");
                     await host.StopAsync();
                     CleanupDatabase();
@@ -152,7 +157,7 @@ partial class Program
                             .AddCodeStep<FluentEntryStep>()
                             .AddCodeStep<FluentProcessStep>(c => c
                                 .WithTimeout("00:00:10")
-                                .WithRetry(r => r.ExponentialBackoff(initialDelay: "5s", maxDelay: "00:05:00"))
+                                .WithRetry(r => r.Immediate(3))
                             )
                             .AddCodeStep<FluentValidationStep>(c => c
                                 .WithTimeout("00:00:15")
@@ -164,7 +169,10 @@ partial class Program
                                 .WithSystemPrompt("你是 fluent 助手")
                                 .WithRetry(r=>r.FixedInterval(maxRetries:3,initialDelay: "5s", maxDelay: "00:05:00"))
                             )
-                        ).WithVersion("1.0").WithName("s9-fluent-wf").WithDescription("Builder Fluent API 配置演示");
+                        ).WithName("s9-fluent-wf").WithVersion("1.0").WithDescription("Builder Fluent API 配置演示");
+
+                        // Scenario 11: DSL 工作流 (Register<T> 类继承式定义)
+                        chain.Register<DslDemoWorkflow>();
                     });
 
                 //services.AddSingleton<IHermesWebhookClient, NullWebhookClient>();

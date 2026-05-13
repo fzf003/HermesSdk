@@ -882,7 +882,15 @@ public class WorkflowEngine : IAsyncDisposable
                     var retryConfig = YamlConfigConverter.ConvertRetryConfig(mergedConfig.Retry!);
                     await _retryExecutor.ExecuteWithRetryAsync<string>(async innerCt =>
                     {
-                        var runId = await _runClient.StartAsync(prompt, agentHandler.RunOptions, innerCt);
+                        string runId;
+                        try
+                        {
+                            runId = await _runClient.StartAsync(prompt, agentHandler.RunOptions, innerCt);
+                        }
+                        catch (Exception ex)
+                        {
+                            throw new StepRetryException($"RunClient 启动异常: {ex.Message}", ex);
+                        }
                         _logger.LogDebug("RunClient 已启动: {InstanceId}/{Step}, RunId: {RunId}", ctx.InstanceId, stepId, runId);
 
                         await foreach (var evt in _runClient.SubscribeEventsAsync(runId, innerCt))
@@ -1120,7 +1128,15 @@ public class WorkflowEngine : IAsyncDisposable
                 var retryConfig = YamlConfigConverter.ConvertRetryConfig(mergedConfig.Retry!);
                 result = await _retryExecutor.ExecuteWithRetryAsync<StepResult>(async innerCt =>
                 {
-                    var r = await codeHandler.ExecuteAsync(ctx, innerCt);
+                    StepResult r;
+                    try
+                    {
+                        r = await codeHandler.ExecuteAsync(ctx, innerCt);
+                    }
+                    catch (Exception ex)
+                    {
+                        throw new StepRetryException($"步骤执行异常: {ex.Message}", ex);
+                    }
                     if (!r.IsSuccess)
                         throw new StepRetryException(r.Error?.Message ?? "步骤失败", r.Error);
                     return r;
