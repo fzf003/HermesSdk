@@ -20,11 +20,12 @@ public class HermesRunClient : IHermesRunClient
     /// 初始化 HermesRunClient 实例。
     /// </summary>
     /// <param name="httpClient">用于发送 HTTP 请求的 HttpClient 实例。</param>
-    public HermesRunClient(HttpClient httpClient)
+    /// <param name="logger">用于记录日志的 ILogger 实例。</param>
+    public HermesRunClient(HttpClient httpClient, ILogger<HermesRunClient> logger)
     {
         _httpClient = httpClient;
 
-        _logger = LoggerFactory.Create(c => c.SetMinimumLevel(level: LogLevel.Debug)).CreateLogger<HermesRunClient>();
+        _logger = logger;
     }
 
     /// <summary>
@@ -77,7 +78,6 @@ public class HermesRunClient : IHermesRunClient
  
             var data = line[6..];
             this._logger.LogDebug(data);
-            Console.WriteLine(data);
             var evt = JsonSerializer.Deserialize<RunEvent>(data, _jsonOptions);
             if (evt is not null)
             {

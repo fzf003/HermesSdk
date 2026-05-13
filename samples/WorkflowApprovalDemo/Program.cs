@@ -14,10 +14,13 @@ builder.Services.AddWorkflowChain(chain =>
     // ManagerApprovalStep 继承 HumanApprovalStepHandler，默认 HeartbeatExtension = 24 小时
     // 心跳检测自动计算有效阈值：Agent 步骤用全局 5 分钟，审批步骤用 24 小时
 
-    chain.AddStep<ReviewAgentStep>();
-    chain.AddStep<ManagerApprovalStep>();
-    chain.AddStep<NotifyAgentStep>();
-    chain.AddStep<EscalationAgentStep>();    
+    chain.AddWorkflow("approval-workflow", opt => opt
+        .AddAgentStep<ReviewAgentStep>()
+        .AddHumanApprovalStep<ManagerApprovalStep>(step =>
+            step.WithTimeout("00:24:00").WithRetry(c => c.Immediate(3)))
+        .AddCodeStep<NotifyAgentStep>()
+        .AddCodeStep<EscalationAgentStep>()
+    );
 });
 
 // ── Swagger ──

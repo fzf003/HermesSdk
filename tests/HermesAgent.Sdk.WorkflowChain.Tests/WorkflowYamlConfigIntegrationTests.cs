@@ -22,7 +22,7 @@ public class WorkflowYamlConfigIntegrationTests
 
         engine.RegisterStepDefinitions("test-workflow",
         [
-            new StepDefinition { Id = "agent-step", Type = StepType.Agent, Retry = new RetryConfigYaml { MaxRetries = 3, Policy = "immediate" } }
+            new StepDefinition { Id = "agent-step", Type = StepType.Agent, Retry = new RetryConfigYaml { MaxRetries = 3, Policy = RetryPolicy.Immediate } }
         ]);
 
         var ctx = new WorkflowContext { InstanceId = "wf-retry-test" };

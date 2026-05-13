@@ -16,6 +16,7 @@ public class YamlWorkflowParser
     {
         _deserializer = new DeserializerBuilder()
             .WithTypeConverter(new StepTypeConverter())
+            .WithTypeConverter(new RetryPolicyConverter())
             .IgnoreUnmatchedProperties()
             .Build();
     }
@@ -59,7 +60,22 @@ public class YamlWorkflowParser
     }
 
     /// <summary>
-    /// 从YAML文件解析工作流定义。
+    /// 从YAML文件解析工作流定义（同步方法）。
+    /// </summary>
+    /// <param name="filePath">YAML文件路径</param>
+    /// <param name="validate">是否执行验证(默认true)</param>
+    /// <returns>解析后的工作流定义</returns>
+    public WorkflowDefinition ParseFromFile(string filePath, bool validate = true)
+    {
+        if (!File.Exists(filePath))
+            throw new FileNotFoundException($"YAML文件不存在: {filePath}");
+
+        var yamlContent = File.ReadAllText(filePath);
+        return Parse(yamlContent, validate);
+    }
+
+    /// <summary>
+    /// 从YAML文件解析工作流定义（异步方法）。
     /// </summary>
     /// <param name="filePath">YAML文件路径</param>
     /// <param name="validate">是否执行验证(默认true)</param>

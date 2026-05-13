@@ -3,6 +3,7 @@ using HermesAgent.Sdk.Extensions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 
@@ -18,11 +19,12 @@ class Program
     // ──────────────────────────────────────────
     private static readonly string[] DemoPrompts = new[]
     {
-        "分析 HermesAgent.Sdk 项目中可能存在的性能瓶颈",
-        "审查 src/Clients/HermesRunClient.cs 的代码安全性",
-        "检查项目依赖包的版本兼容性问题",
-        "总结 HermesAgent.Sdk 的架构设计亮点",
-        "查找 .csproj 文件中配置可能存在的问题",
+       // "分析 HermesAgent.Sdk 项目中可能存在的性能瓶颈",
+       // "审查 src/Clients/HermesRunClient.cs 的代码安全性",
+        //"检查项目依赖包的版本兼容性问题",
+        //"总结 HermesAgent.Sdk 的架构设计亮点",
+        //"查找 .csproj 文件中配置可能存在的问题",
+        "今天北京的天气如何？",
     };
 
     // ──────────────────────────────────────────
@@ -270,31 +272,31 @@ class Program
 
                 switch (evt.Type)
                 {
-                    case "tool_started":
+                    case "tool.started":
                         var toolName = evt.Data?.GetValueOrDefault("tool_name")?.ToString();
                         state.LastEvent = toolName ?? "工具执行";
                         break;
-                    case "tool_completed":
+                    case "tool.completed":
                         state.LastEvent = $"工具完成";
                         break;
-                    case "reasoning":
+                    case "reasoning.available":
                         state.LastEvent = "推理中...";
                         break;
-                    case "completion":
+                    case "run.completion":
                         state.Status = "completed";
                         state.LastEvent = "✅ 完成";
                         if (evt.Data?.TryGetValue("content", out var content) == true)
                             state.Output = content?.ToString();
                         UpdateDashboard(states, runIds);
                         return;
-                    case "error":
+                    case "run.error":
                         state.Status = "failed";
                         state.LastEvent = "❌ 错误";
                         if (evt.Data?.TryGetValue("message", out var msg) == true)
                             state.ErrorMessage = msg?.ToString();
                         UpdateDashboard(states, runIds);
                         return;
-                    case "cancelled":
+                    case "run.cancelled":
                         state.Status = "cancelled";
                         state.LastEvent = "已取消";
                         UpdateDashboard(states, runIds);
@@ -455,5 +457,6 @@ class Program
             .ConfigureServices((context, services) =>
             {
                 services.AddHermesAgent(context.Configuration);
+                services.AddLogging(configure => configure.AddConsole().AddDebug());
             });
 }

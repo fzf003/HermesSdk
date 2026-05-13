@@ -8,7 +8,7 @@ public class HotReloadTests
     private static WorkflowRegistry CreateRegistry() => new();
     private static WorkflowImportExportManager CreateImportExport(WorkflowRegistry registry) => new(registry);
     private static WorkflowHotReloadManager CreateHotReload(WorkflowRegistry registry, WorkflowImportExportManager importExport)
-        => new(registry, importExport, NullLogger<WorkflowHotReloadManager>.Instance);
+        => new(registry, importExport, engine: null, NullLogger<WorkflowHotReloadManager>.Instance);
 
     [Fact]
     public void StartWatching_ValidDirectory_StartsMonitoring()

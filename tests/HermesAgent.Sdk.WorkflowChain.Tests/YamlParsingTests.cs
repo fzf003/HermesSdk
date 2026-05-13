@@ -134,7 +134,7 @@ steps:
 
         Assert.NotNull(definition.Steps[0].Retry);
         Assert.Equal(3, definition.Steps[0].Retry.MaxRetries);
-        Assert.Equal("exponential_backoff", definition.Steps[0].Retry.Policy);
+        Assert.Equal(RetryPolicy.ExponentialBackoff, definition.Steps[0].Retry.Policy);
         Assert.Equal("1s", definition.Steps[0].Retry.InitialDelay);
         Assert.Equal(2.0, definition.Steps[0].Retry.BackoffFactor);
         Assert.Equal("5m", definition.Steps[0].Retry.MaxDelay);

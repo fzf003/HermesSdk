@@ -6,8 +6,14 @@ namespace HermesAgent.Sdk.WorkflowChain;
 /// </summary>
 public class WorkflowContext
 {
-    /// <summary>工作流实例唯一标识</summary>
-    public string InstanceId { get; set; } = Guid.NewGuid().ToString("N");
+    /// <summary>工作流实例唯一标识（每次执行唯一）</summary>
+    public string InstanceId { get; set; } = "";
+
+    /// <summary>所属工作流定义名称（与 AddWorkflow().WithName() / YAML name 一致）</summary>
+    public string? WorkflowName { get; set; }
+
+    /// <summary>所属工作流定义 ID（WorkflowDefinition.Id，与 YAML / C# 注册的 workflow 定义一致）</summary>
+    public string? WorkflowId { get; set; }
 
     /// <summary>工作流启动时的输入参数</summary>
     public Dictionary<string, object?> InitialInput { get; init; } = new();

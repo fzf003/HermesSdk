@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using HermesAgent.Sdk.Extensions;
+using Microsoft.Extensions.Logging;
 
 /// <summary>
 /// ConsoleChat 示例程序
@@ -120,10 +121,12 @@ class Program
                 config.AddJsonFile("appsettings.json", optional: true);
                 config.AddUserSecrets<Program>();
                 config.AddEnvironmentVariables();
+         
             })
             .ConfigureServices((context, services) =>
             {
                 // 配置 HermesAgent
                 services.AddHermesAgent(context.Configuration);
+              //  services.AddLogging(configure => configure.AddConsole().AddDebug());
             });
 }

@@ -4,7 +4,7 @@
 
 ## 功能特性
 
-- ✅ YAML 声明式工作流加载与执行（`RegisterFromYamlAsync`）
+- ✅ YAML 声明式工作流加载与执行（`bootstrapper.LoadAndApplyAsync`）
 - ✅ 重试策略演示（`exponential_backoff` / `fixed_interval`）
 - ✅ 超时策略演示（`timeout: 5s` + `timeout_action: fail / skip`）
 - ✅ 错误策略演示（`SkipFailedBranch` — 并行分支失败不终断工作流）

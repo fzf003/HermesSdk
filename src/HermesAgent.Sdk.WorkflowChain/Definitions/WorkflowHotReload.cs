@@ -10,6 +10,7 @@ public class WorkflowHotReloadManager : IDisposable
 {
     private readonly WorkflowRegistry _registry;
     private readonly WorkflowImportExportManager _importExport;
+    private readonly WorkflowEngine? _engine;
     private readonly ILogger<WorkflowHotReloadManager>? _logger;
     private readonly ConcurrentDictionary<string, FileSystemWatcher> _watchers = new();
     private readonly ConcurrentDictionary<string, DateTime> _lastReloadTime = new();
@@ -31,14 +32,17 @@ public class WorkflowHotReloadManager : IDisposable
     /// </summary>
     /// <param name="registry">工作流注册表</param>
     /// <param name="importExport">导入导出管理器</param>
+    /// <param name="engine">工作流引擎(可选，用于热加载时同步步骤配置)</param>
     /// <param name="logger">日志记录器(可选)</param>
     public WorkflowHotReloadManager(
         WorkflowRegistry registry,
         WorkflowImportExportManager importExport,
+        WorkflowEngine? engine = null,
         ILogger<WorkflowHotReloadManager>? logger = null)
     {
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
         _importExport = importExport ?? throw new ArgumentNullException(nameof(importExport));
+        _engine = engine;
         _logger = logger;
     }
 
@@ -146,6 +150,7 @@ public class WorkflowHotReloadManager : IDisposable
             }
 
             _registry.Register(definition);
+            _engine?.ReplaceStepDefinitions(definition.Name, definition.Steps);
             _lastReloadTime[filePath] = DateTime.UtcNow;
 
             WorkflowReloaded?.Invoke(filePath, definition);

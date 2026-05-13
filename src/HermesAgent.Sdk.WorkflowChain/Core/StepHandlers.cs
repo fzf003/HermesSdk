@@ -5,6 +5,7 @@ namespace HermesAgent.Sdk.WorkflowChain;
 /// </summary>
 public enum AgentCommunicationMode
 {
+    None,
     /// <summary>Webhook 回调模式 — Agent 完成后 HTTP POST 通知</summary>
     Webhook,
 
@@ -19,7 +20,7 @@ public enum AgentCommunicationMode
 public abstract class AgentStepHandler : StepHandlerBase
 {
     /// <summary>Agent 通信模式。默认 Webhook，可重写为 RunClient。</summary>
-    public virtual AgentCommunicationMode Mode => AgentCommunicationMode.Webhook;
+    public virtual AgentCommunicationMode Mode => AgentCommunicationMode.None;
 
     /// <summary>Hermes config.yaml 中配置的路由名称（Webhook 模式使用）</summary>
     public virtual string RouteName => "";
@@ -29,6 +30,7 @@ public abstract class AgentStepHandler : StepHandlerBase
 
     /// <summary>Agent 的 System Prompt（可选）</summary>
     public virtual string? SystemPrompt => null;
+    public virtual string? Prompt => null;
 
     /// <summary>Agent 的 User Prompt 模板（引用 context 中的前序输出）</summary>
     public abstract string BuildPrompt(WorkflowContext context);

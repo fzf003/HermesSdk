@@ -9,7 +9,7 @@ namespace HermesAgent.Sdk.WorkflowChain.YamlDemo;
 
 /// <summary>
 /// WorkflowYamlDemo — 演示 Phase 4 YAML 声明式工作流核心功能：
-///   • YAML 工作流加载与执行（RegisterFromYamlAsync）
+///   • YAML 工作流加载与执行（bootstrapper.LoadAndApplyAsync）
 ///   • retry / timeout / error_policy 运行时生效
 ///   • 变量解析 {{steps.x.output.field}}
 ///   • 热重载（文件监控 + 自动重新注册）
@@ -29,8 +29,11 @@ class Program
         var registry = host.Services.GetRequiredService<WorkflowRegistry>();
         var versionManager = host.Services.GetRequiredService<WorkflowVersionManager>();
         var importExport = host.Services.GetRequiredService<WorkflowImportExportManager>();
+        var bootstrapper = host.Services.GetRequiredService<IWorkflowBootstrapper>();
         var logger = host.Services.GetRequiredService<ILogger<Program>>();
 
+        // 将已注册的工作流同步到 Engine 运行时
+        await bootstrapper.ApplyAllAsync();
         await host.StartAsync();
 
         while (true)
@@ -53,22 +56,22 @@ class Program
             switch (choice)
             {
                 case "1":
-                    await DemoBasicYamlWorkflow(engine, registry);
+                    await DemoBasicYamlWorkflow(engine, bootstrapper);
                     break;
                 case "2":
-                    await DemoRetryWorkflow(engine, registry);
+                    await DemoRetryWorkflow(engine, bootstrapper);
                     break;
                 case "3":
-                    await DemoTimeoutWorkflow(engine, registry);
+                    await DemoTimeoutWorkflow(engine, bootstrapper);
                     break;
                 case "4":
-                    await DemoErrorPolicyWorkflow(engine, registry);
+                    await DemoErrorPolicyWorkflow(engine, bootstrapper);
                     break;
                 case "5":
                     DemoVariableResolution(registry);
                     break;
                 case "6":
-                    await DemoHotReload(engine, registry, importExport, logger);
+                    await DemoHotReload(engine, registry, importExport, bootstrapper, logger);
                     break;
                 case "7":
                     DemoVersionManagement(versionManager, registry);
@@ -93,7 +96,7 @@ class Program
     // ================================================================
     // 1. 基础 YAML 工作流加载与执行
     // ================================================================
-    private static async Task DemoBasicYamlWorkflow(WorkflowEngine engine, WorkflowRegistry registry)
+    private static async Task DemoBasicYamlWorkflow(WorkflowEngine engine, IWorkflowBootstrapper bootstrapper)
     {
         PrintHeader("YAML 工作流加载与执行");
 
@@ -103,16 +106,13 @@ class Program
         Console.WriteLine(yaml.Trim());
         Console.WriteLine(new string('─', 50));
 
-        // 解析并注册
+        // 一步加载：解析 YAML → 注册到 Registry → 同步到 Engine
         var parser = new YamlWorkflowParser();
         var definition = parser.Parse(yaml);
-        registry.Register(definition);
-
-        // 注册步骤定义到引擎
-        engine.RegisterStepDefinitions(definition.Name, definition.Steps);
-
         Console.WriteLine($"✅ 工作流 '{definition.Name}' v{definition.Version} 解析成功");
         Console.WriteLine($"   步骤数: {definition.Steps.Count}");
+
+        await bootstrapper.LoadAndApplyAsync(yaml);
 
         var context = new WorkflowContext
         {
@@ -135,7 +135,7 @@ class Program
     // ================================================================
     // 2. 重试策略演示
     // ================================================================
-    private static async Task DemoRetryWorkflow(WorkflowEngine engine, WorkflowRegistry registry)
+    private static async Task DemoRetryWorkflow(WorkflowEngine engine, IWorkflowBootstrapper bootstrapper)
     {
         PrintHeader("重试策略演示 (exponential_backoff)");
 
@@ -147,10 +147,7 @@ class Program
 
         var parser = new YamlWorkflowParser();
         var definition = parser.Parse(yaml);
-        registry.Register(definition);
-
-        // 注册步骤定义
-        engine.RegisterStepDefinitions(definition.Name, definition.Steps);
+        await bootstrapper.LoadAndApplyAsync(yaml);
 
         // 打印重试配置
         foreach (var step in definition.Steps.Where(s => s.Retry != null))
@@ -177,7 +174,7 @@ class Program
     // ================================================================
     // 3. 超时策略演示
     // ================================================================
-    private static async Task DemoTimeoutWorkflow(WorkflowEngine engine, WorkflowRegistry registry)
+    private static async Task DemoTimeoutWorkflow(WorkflowEngine engine, IWorkflowBootstrapper bootstrapper)
     {
         PrintHeader("超时策略演示 (timeout: 2s)");
 
@@ -189,9 +186,7 @@ class Program
 
         var parser = new YamlWorkflowParser();
         var definition = parser.Parse(yaml);
-        registry.Register(definition);
-
-        engine.RegisterStepDefinitions(definition.Name, definition.Steps);
+        await bootstrapper.LoadAndApplyAsync(yaml);
 
         var context = new WorkflowContext
         {
@@ -208,7 +203,7 @@ class Program
     // ================================================================
     // 4. 错误策略演示 (SkipFailedBranch)
     // ================================================================
-    private static async Task DemoErrorPolicyWorkflow(WorkflowEngine engine, WorkflowRegistry registry)
+    private static async Task DemoErrorPolicyWorkflow(WorkflowEngine engine, IWorkflowBootstrapper bootstrapper)
     {
         PrintHeader("错误策略演示 (SkipFailedBranch)");
 
@@ -220,9 +215,7 @@ class Program
 
         var parser = new YamlWorkflowParser();
         var definition = parser.Parse(yaml);
-        registry.Register(definition);
-
-        engine.RegisterStepDefinitions(definition.Name, definition.Steps);
+        await bootstrapper.LoadAndApplyAsync(yaml);
 
         var context = new WorkflowContext
         {
@@ -295,6 +288,7 @@ class Program
         WorkflowEngine engine,
         WorkflowRegistry registry,
         WorkflowImportExportManager importExport,
+        IWorkflowBootstrapper bootstrapper,
         ILogger logger)
     {
         PrintHeader("热重载演示");
@@ -317,6 +311,7 @@ class Program
             var hotReload = new WorkflowHotReloadManager(
                 registry,
                 importExport,
+                engine: null,
                 logger is ILogger<WorkflowHotReloadManager> hrLogger ? hrLogger : null);
 
             // 注册事件
@@ -336,7 +331,7 @@ class Program
 
             // 先手动加载一次
             var importDef = await importExport.ImportFromYamlFileAsync(yamlFile);
-            engine.RegisterStepDefinitions(importDef.Name, importDef.Steps);
+            await bootstrapper.ApplyAsync(importDef.Name);
             Console.WriteLine($"✅ 初始加载: {importDef.Name} v{importDef.Version}");
 
             // 开始监控（仅当前文件所在目录）

@@ -4,6 +4,42 @@ using YamlDotNet.Serialization;
 namespace HermesAgent.Sdk.WorkflowChain;
 
 /// <summary>
+/// Handler 默认步骤策略与输入模板（用于导出模板时合并到 YAML）。
+/// 这些值对应 StepHandlerBase / AgentStepHandler 上的虚属性默认值。
+/// </summary>
+public record StepHandlerDefaults
+{
+    public string? Timeout { get; init; }
+    public string? TimeoutAction { get; init; }
+    public RetryConfigYaml? Retry { get; init; }
+    public string? ErrorPolicy { get; init; }
+    public string? Prompt { get; init; }
+    public string? SystemPrompt { get; init; }
+    public string? RouteName { get; init; }
+    public string? EventType { get; init; }
+    public ApprovalNotificationConfig? Notification { get; init; }
+    public string? HeartbeatExtension { get; init; }
+
+    /// <summary>从 StepHandlerBase 提取通用步骤策略默认值</summary>
+    public static StepHandlerDefaults FromHandler(StepHandlerBase handler)
+    {
+        var agentHandler = handler as AgentStepHandler;
+        return new StepHandlerDefaults
+        {
+            Timeout = handler.Timeout,
+            TimeoutAction = handler.TimeoutAction,
+            Retry = handler.Retry,
+            ErrorPolicy = handler.ErrorPolicy,
+            Prompt = agentHandler?.Prompt,
+            SystemPrompt = agentHandler?.SystemPrompt,
+            RouteName = agentHandler?.RouteName,
+            EventType = agentHandler?.EventType,
+            HeartbeatExtension = handler.HeartbeatExtension?.ToString(),
+        };
+    }
+}
+
+/// <summary>
 /// 工作流导入导出管理器 - 支持YAML和JSON格式的序列化/反序列化。
 /// </summary>
 public class WorkflowImportExportManager
@@ -17,11 +53,16 @@ public class WorkflowImportExportManager
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
 
         _yamlSerializer = new SerializerBuilder()
+            .ConfigureDefaultValuesHandling(DefaultValuesHandling.OmitNull)
             .WithTypeConverter(new StepTypeConverter())
+            .WithTypeConverter(new RetryPolicyConverter())
+            .WithTypeConverter(new RetryConfigConverter())
             .Build();
 
         _yamlDeserializer = new DeserializerBuilder()
             .WithTypeConverter(new StepTypeConverter())
+            .WithTypeConverter(new RetryPolicyConverter())
+            .WithTypeConverter(new RetryConfigConverter())
             .IgnoreUnmatchedProperties()
             .Build();
     }
@@ -39,6 +80,74 @@ public class WorkflowImportExportManager
             : _registry.Get(name);
 
         return _yamlSerializer.Serialize(definition);
+    }
+
+    /// <summary>
+    /// 导出包含 Handler 默认配置的初始 YAML 模板。
+    /// 将 Handler 声明的默认策略（timeout/retry/error_policy/prompt等）合并到 YAML StepDefinition 中，
+    /// 生成可供非程序人员编辑的配置起点。
+    /// YAML 已显式配置的值优先保留，仅填充 Handler 默认值中 YAML 未配置的部分。
+    /// </summary>
+    /// <param name="name">工作流名称</param>
+    /// <param name="handlerDefaults">步骤ID → Handler 默认配置映射</param>
+    /// <param name="version">版本号(可选,默认最新版本)</param>
+    /// <returns>YAML格式的工作流定义（含 Handler 默认配置）</returns>
+    public string ExportTemplate(string name, IReadOnlyDictionary<string, StepHandlerDefaults> handlerDefaults, string? version = null)
+    {
+        var definition = version != null
+            ? _registry.GetByVersion(name, version)
+            : _registry.Get(name);
+
+        // 深拷贝: 反序列化再序列化以产生独立副本
+        var yaml = _yamlSerializer.Serialize(definition);
+        var clone = _yamlDeserializer.Deserialize<WorkflowDefinition>(yaml) ?? definition;
+
+        // 清除拓扑字段 — 拓扑由代码定义，YAML 模板不参与覆盖
+        foreach (var step in clone.Steps)
+        {
+            step.NextStepId = null;
+            step.WaitMode = null;
+            step.DependsOn = null;
+
+            if (!handlerDefaults.TryGetValue(step.Id, out var defaults))
+                continue;
+
+            // 仅填充 YAML 未显式配置的字段（YAML 配置优先）
+            if (string.IsNullOrWhiteSpace(step.Timeout))
+                step.Timeout = defaults.Timeout;
+            if (string.IsNullOrWhiteSpace(step.TimeoutAction))
+                step.TimeoutAction = defaults.TimeoutAction;
+            if (step.Retry == null && defaults.Retry != null)
+                step.Retry = defaults.Retry;
+            if (string.IsNullOrWhiteSpace(step.ErrorPolicy))
+                step.ErrorPolicy = defaults.ErrorPolicy;
+            if (string.IsNullOrWhiteSpace(step.Prompt))
+                step.Prompt = defaults.Prompt;
+            if (string.IsNullOrWhiteSpace(step.SystemPrompt))
+                step.SystemPrompt = defaults.SystemPrompt;
+
+            // Agent 专属字段
+            if (step.Type == StepType.Agent)
+            {
+                if (string.IsNullOrWhiteSpace(step.RouteName))
+                    step.RouteName = defaults.RouteName;
+                if (string.IsNullOrWhiteSpace(step.EventType))
+                    step.EventType = defaults.EventType;
+            }
+
+            // HumanApproval 专属字段
+            if (step.Type == StepType.HumanApproval)
+            {
+                if (step.Notification == null && defaults.Notification != null)
+                    step.Notification = defaults.Notification;
+            }
+
+            // 所有步骤类型通用
+            if (string.IsNullOrWhiteSpace(step.HeartbeatExtension))
+                step.HeartbeatExtension = defaults.HeartbeatExtension;
+        }
+
+        return _yamlSerializer.Serialize(clone);
     }
 
     /// <summary>

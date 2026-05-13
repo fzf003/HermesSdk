@@ -300,6 +300,7 @@ public class HeartbeatTimeoutTests
     private sealed class TestAgentStep : AgentStepHandler
     {
         public override string StepId { get; }
+        public override AgentCommunicationMode Mode => AgentCommunicationMode.Webhook;
         public override string RouteName => "test.route";
         public override string EventType => "test.event";
         public override string BuildPrompt(WorkflowContext context) => "test prompt";

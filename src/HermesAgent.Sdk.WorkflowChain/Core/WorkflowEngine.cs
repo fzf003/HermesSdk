@@ -11,6 +11,26 @@ namespace HermesAgent.Sdk.WorkflowChain;
 /// </summary>
 public class WorkflowEngine : IAsyncDisposable
 {
+    /// <summary>
+    /// 步骤运行时策略合并结果。
+    /// 仅包含策略与输入模板字段（timeout/retry/error_policy/prompt），
+    /// 不包含拓扑字段（depends_on/next_step_id/steps/wait_mode）。
+    /// 拓扑由代码定义，不受 YAML 覆盖。
+    /// </summary>
+    private sealed class MergedStepRuntimeConfig
+    {
+        public string? Timeout { get; init; }
+        public string? TimeoutAction { get; init; }
+        public RetryConfigYaml? Retry { get; init; }
+        public string? ErrorPolicy { get; init; }
+        public string? Prompt { get; init; }
+        public string? SystemPrompt { get; init; }
+        public string? RouteName { get; init; }
+        public string? EventType { get; init; }
+        public ApprovalNotificationConfig? Notification { get; init; }
+        public string? HeartbeatExtension { get; init; }
+    }
+
     private readonly Dictionary<string, IStepHandler> _handlers;
     private readonly IHermesWebhookClient _webhookClient;
     private readonly IHermesRunClient _runClient;
@@ -43,6 +63,8 @@ public class WorkflowEngine : IAsyncDisposable
     private readonly SemaphoreSlim _initializeLock = new(1, 1);
     private volatile bool _initialized;
 
+    private readonly IReadOnlyDictionary<Type, StepHandlerDefaults> _fluentDefaults;
+
     private static readonly TimeSpan RecoveryTimeout = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan RecoveryOpTimeout = TimeSpan.FromSeconds(30);
 
@@ -52,7 +74,8 @@ public class WorkflowEngine : IAsyncDisposable
         IHermesRunClient runClient,
         ILogger<WorkflowEngine> logger,
         IWorkflowStateStore stateStore,
-        WorkflowRegistry? workflowRegistry = null
+        WorkflowRegistry? workflowRegistry = null,
+        IReadOnlyDictionary<Type, StepHandlerDefaults>? fluentDefaults = null
     )
     {
         _handlers = handlers.ToDictionary(h => h.StepId);
@@ -61,6 +84,7 @@ public class WorkflowEngine : IAsyncDisposable
         _logger = logger;
         _stateStore = stateStore;
         _workflowRegistry = workflowRegistry;
+        _fluentDefaults = fluentDefaults ?? new Dictionary<Type, StepHandlerDefaults>();
 
         // 初始化可靠性组件
         _retryExecutor = new RetryExecutor(LoggerFactory.Create(b => { }).CreateLogger<RetryExecutor>());
@@ -87,6 +111,23 @@ public class WorkflowEngine : IAsyncDisposable
             _stepDefinitions[$"{workflowName}:{def.Id}"] = def;
     }
 
+    public void ReplaceStepDefinitions(string workflowName, IEnumerable<StepDefinition> definitions)
+    {
+        if (string.IsNullOrEmpty(workflowName))
+            throw new ArgumentNullException(nameof(workflowName));
+        if (definitions == null)
+            throw new ArgumentNullException(nameof(definitions));
+
+        var prefix = workflowName + ":";
+        var keysToRemove = _stepDefinitions.Keys
+            .Where(k => k.StartsWith(prefix, StringComparison.Ordinal))
+            .ToList();
+        foreach (var key in keysToRemove)
+            _stepDefinitions.TryRemove(key, out var _);
+
+        RegisterStepDefinitions(workflowName, definitions);
+    }
+
     /// <summary>
     /// 获取步骤定义。无 workflowName 时返回 null。
     /// </summary>
@@ -94,6 +135,81 @@ public class WorkflowEngine : IAsyncDisposable
     {
         workflowName ??= "__default__";
         return _stepDefinitions.TryGetValue($"{workflowName}:{stepId}", out var def) ? def : null;
+    }
+
+    /// <summary>
+    /// 合并 YAML StepDefinition 与 Handler 默认值，产生运行时生效的步骤策略。
+    /// 优先级：YAML > Handler 默认值 > 引擎内建默认值。
+    ///
+    /// 明确排除的拓扑字段（不会进入此合并链路）：
+    /// - depends_on / next_step_id / steps / wait_mode
+    /// 这些字段表达流程拓扑或调度关系，不属于步骤执行策略。
+    /// 代码工作流的拓扑由 StepResult 返回值定义，YAML 不参与覆盖。
+    /// </summary>
+    private MergedStepRuntimeConfig MergeStepRuntimeConfig(IStepHandler handler, StepDefinition? stepDef)
+    {
+        var baseHandler = handler as StepHandlerBase;
+        var agentHandler = handler as AgentStepHandler;
+
+        // 读取 Fluent API 配置（如有）
+        _fluentDefaults.TryGetValue(handler.GetType(), out var fluent);
+
+        return new MergedStepRuntimeConfig
+        {
+            Timeout = !string.IsNullOrWhiteSpace(stepDef?.Timeout) ? stepDef!.Timeout
+                    : !string.IsNullOrWhiteSpace(fluent?.Timeout) ? fluent.Timeout
+                    : baseHandler?.Timeout,
+            TimeoutAction = !string.IsNullOrWhiteSpace(stepDef?.TimeoutAction) ? stepDef!.TimeoutAction
+                          : !string.IsNullOrWhiteSpace(fluent?.TimeoutAction) ? fluent.TimeoutAction
+                          : baseHandler?.TimeoutAction,
+            Retry = stepDef?.Retry ?? fluent?.Retry ?? baseHandler?.Retry,
+            ErrorPolicy = !string.IsNullOrWhiteSpace(stepDef?.ErrorPolicy) ? stepDef!.ErrorPolicy
+                        : !string.IsNullOrWhiteSpace(fluent?.ErrorPolicy) ? fluent.ErrorPolicy
+                        : baseHandler?.ErrorPolicy,
+            Prompt = !string.IsNullOrWhiteSpace(stepDef?.Prompt) ? stepDef!.Prompt
+                   : !string.IsNullOrWhiteSpace(fluent?.Prompt) ? fluent.Prompt
+                   : agentHandler?.Prompt,
+            SystemPrompt = !string.IsNullOrWhiteSpace(stepDef?.SystemPrompt) ? stepDef!.SystemPrompt
+                         : !string.IsNullOrWhiteSpace(fluent?.SystemPrompt) ? fluent.SystemPrompt
+                         : agentHandler?.SystemPrompt,
+            RouteName = !string.IsNullOrWhiteSpace(stepDef?.RouteName) ? stepDef!.RouteName
+                      : !string.IsNullOrWhiteSpace(fluent?.RouteName) ? fluent.RouteName
+                      : agentHandler?.RouteName,
+            EventType = !string.IsNullOrWhiteSpace(stepDef?.EventType) ? stepDef!.EventType
+                      : !string.IsNullOrWhiteSpace(fluent?.EventType) ? fluent.EventType
+                      : agentHandler?.EventType,
+            Notification = stepDef?.Notification ?? fluent?.Notification,
+            HeartbeatExtension = !string.IsNullOrWhiteSpace(stepDef?.HeartbeatExtension) ? stepDef!.HeartbeatExtension
+                               : !string.IsNullOrWhiteSpace(fluent?.HeartbeatExtension) ? fluent.HeartbeatExtension
+                               : baseHandler?.HeartbeatExtension?.ToString(),
+        };
+    }
+
+    private static string? ResolvePromptTemplate(string? promptTemplate, WorkflowContext ctx)
+    {
+        if (string.IsNullOrWhiteSpace(promptTemplate))
+            return null;
+
+        return new VariableResolver(ctx).Resolve(promptTemplate);
+    }
+
+    /// <summary>
+    /// 解析 Agent 步骤的有效通信模式。
+    /// 优先级：YAML communication_mode > Handler.Mode 虚属性。
+    /// </summary>
+    private static AgentCommunicationMode ResolveAgentMode(AgentStepHandler handler, StepDefinition? stepDef)
+    {
+        if (!string.IsNullOrWhiteSpace(stepDef?.CommunicationMode))
+        {
+            return stepDef.CommunicationMode.ToLowerInvariant() switch
+            {
+                "none" => AgentCommunicationMode.None,
+                "webhook" => AgentCommunicationMode.Webhook,
+                "run_client" => AgentCommunicationMode.RunClient,
+                _ => handler.Mode,
+            };
+        }
+        return handler.Mode;
     }
 
     /// <summary>
@@ -116,9 +232,15 @@ public class WorkflowEngine : IAsyncDisposable
 
         var instance = new WorkflowInstance { Context = context, EntryStepId = entryStepId, };
 
-        // 关联工作流名称（用于查找 StepDefinition）
+        // 关联工作流名称与定义 ID（用于查找 StepDefinition 和追溯定义）
         if (workflowName != null)
+        {
             instance.WorkflowName = workflowName;
+            context.WorkflowName = workflowName;
+
+            if (_workflowRegistry != null && _workflowRegistry.IsRegistered(workflowName))
+                context.WorkflowId = _workflowRegistry.Get(workflowName).Id;
+        }
 
         // 为工作流步骤预建 Pending 记录
         var stepCount = InitializeRecords(instance, workflowName);
@@ -575,13 +697,25 @@ public class WorkflowEngine : IAsyncDisposable
         var maxExtension = TimeSpan.Zero;
         foreach (var stepId in instance.InFlightStepIds)
         {
-            if (_handlers.TryGetValue(stepId, out var handler)
-                && handler is StepHandlerBase baseHandler
-                && baseHandler.HeartbeatExtension.HasValue
-                && baseHandler.HeartbeatExtension!.Value > maxExtension)
+            if (!_handlers.TryGetValue(stepId, out var handler)
+                || handler is not StepHandlerBase baseHandler)
+                continue;
+
+            // StepDefinition 的 heartbeat_extension 覆盖 Handler 虚属性
+            var stepDef = GetStepDefinition(instance.WorkflowName, stepId);
+            TimeSpan? extension;
+            if (!string.IsNullOrWhiteSpace(stepDef?.HeartbeatExtension)
+                && TimeSpan.TryParse(stepDef.HeartbeatExtension, out var parsed))
             {
-                maxExtension = baseHandler.HeartbeatExtension!.Value;
+                extension = parsed;
             }
+            else
+            {
+                extension = baseHandler.HeartbeatExtension;
+            }
+
+            if (extension.HasValue && extension.Value > maxExtension)
+                maxExtension = extension.Value;
         }
 
         return maxExtension > globalThreshold ? maxExtension : globalThreshold;
@@ -711,22 +845,24 @@ public class WorkflowEngine : IAsyncDisposable
     )
     {
         var ctx = instance.Context;
+        var mergedConfig = MergeStepRuntimeConfig(agentHandler, stepDef);
+
+        // 解析通信模式：YAML communication_mode > Handler.Mode
+        var effectiveMode = ResolveAgentMode(agentHandler, stepDef);
 
         // 创建超时监控（如果 StepDefinition 配置了 timeout）
-        var timeoutConfig = stepDef != null
-            ? YamlConfigConverter.ConvertTimeoutConfig(stepDef.Timeout, stepDef.TimeoutAction)
-            : null;
+        var timeoutConfig = YamlConfigConverter.ConvertTimeoutConfig(mergedConfig.Timeout, mergedConfig.TimeoutAction);
         using var timeoutMonitor = timeoutConfig != null
             ? new TimeoutMonitor(stepId, ctx.InstanceId, timeoutConfig, LoggerFactory.Create(b => { }).CreateLogger<TimeoutMonitor>())
             : null;
 
-        if (agentHandler.Mode == AgentCommunicationMode.RunClient)
+        if (effectiveMode == AgentCommunicationMode.RunClient)
         {
             // RunClient SSE 模式
             record.Status = StepStatus.Running;
             record.StartedAt = DateTime.UtcNow;
 
-            var prompt = agentHandler.BuildPrompt(ctx);
+            var prompt = ResolvePromptTemplate(mergedConfig.Prompt, ctx) ?? agentHandler.BuildPrompt(ctx);
             record.InputSnapshot = prompt;
 
             // 构建步骤执行的取消令牌（关联超时和 shutdown）
@@ -736,14 +872,14 @@ public class WorkflowEngine : IAsyncDisposable
             var stepCt = linkedCts?.Token ?? _shutdownCts.Token;
 
             // 判断是否应用重试
-            var shouldRetry = stepDef?.Retry != null && agentHandler.Mode == AgentCommunicationMode.RunClient;
+            var shouldRetry = mergedConfig.Retry != null && effectiveMode == AgentCommunicationMode.RunClient;
 
             try
             {
                 if (shouldRetry)
                 {
                     // 使用重试执行器包装 RunClient 调用
-                    var retryConfig = YamlConfigConverter.ConvertRetryConfig(stepDef!.Retry!);
+                    var retryConfig = YamlConfigConverter.ConvertRetryConfig(mergedConfig.Retry!);
                     await _retryExecutor.ExecuteWithRetryAsync<string>(async innerCt =>
                     {
                         var runId = await _runClient.StartAsync(prompt, agentHandler.RunOptions, innerCt);
@@ -797,7 +933,7 @@ public class WorkflowEngine : IAsyncDisposable
                 MarkFailed(record, $"步骤超时: {ex.Message}", ex.ToString());
                 record.FullStackTrace = ex.ToString();
 
-                var errorPolicy = stepDef != null ? YamlConfigConverter.ConvertErrorPolicy(stepDef.ErrorPolicy) : null;
+                var errorPolicy = YamlConfigConverter.ConvertErrorPolicy(mergedConfig.ErrorPolicy);
                 if (errorPolicy != null)
                 {
                     await _errorHandler.HandleErrorAsync(instance, record, ex, errorPolicy.Value, ct);
@@ -834,7 +970,7 @@ public class WorkflowEngine : IAsyncDisposable
                 MarkFailed(record, ex.Message, ex.ToString());
                 record.FullStackTrace = ex.ToString();
 
-                var errorPolicy = stepDef != null ? YamlConfigConverter.ConvertErrorPolicy(stepDef.ErrorPolicy) : null;
+                var errorPolicy = YamlConfigConverter.ConvertErrorPolicy(mergedConfig.ErrorPolicy);
                 if (errorPolicy != null)
                 {
                     await _errorHandler.HandleErrorAsync(instance, record, ex, errorPolicy.Value, ct);
@@ -860,9 +996,9 @@ public class WorkflowEngine : IAsyncDisposable
                 }
             }
         }
-        else
+        else if (effectiveMode == AgentCommunicationMode.Webhook)
         {
-            // Webhook 模式
+            // Webhook 模式 — 发送 webhook 回调
             record.Status = StepStatus.Dispatched;
             record.StartedAt = DateTime.Now;
 
@@ -879,8 +1015,8 @@ public class WorkflowEngine : IAsyncDisposable
             try
             {
                 var webhookResult = await _webhookClient.SendRawAsync(
-                    agentHandler.RouteName,
-                    agentHandler.EventType,
+                    mergedConfig.RouteName ?? agentHandler.RouteName,
+                    mergedConfig.EventType ?? agentHandler.EventType,
                     payload,
                     ct: ct
                 );
@@ -904,6 +1040,35 @@ public class WorkflowEngine : IAsyncDisposable
                 await SaveCheckpointAsync(instance, ct);
             }
         }
+        else
+        {
+            // None 模式 — 不调用 Hermes Agent，本地直接完成
+            record.Status = StepStatus.Running;
+            record.StartedAt = DateTime.UtcNow;
+
+            var prompt = ResolvePromptTemplate(mergedConfig.Prompt, ctx) ?? agentHandler.BuildPrompt(ctx);
+            record.InputSnapshot = prompt;
+
+            try
+            {
+                MarkCompleted(record);
+                await SaveCheckpointAsync(instance, ct);
+
+                if (await TryDecrementJoinAndMaybeAdvanceAsync(instance, stepId, ct))
+                    return;
+
+                var result = await agentHandler.ExecuteAsync(ctx, ct);
+                record.TriggeredSteps = result.NextStepIds?.ToList();
+                await AdvanceAsync(instance, result, stepId, ct);
+            }
+            catch (Exception ex)
+            {
+                MarkFailed(record, ex.Message, ex.ToString());
+                record.FullStackTrace = ex.ToString();
+                ctx.IsRunning = false;
+                await SaveCheckpointAsync(instance, ct);
+            }
+        }
     }
 
     private async Task ExecuteCodeStepAsync(
@@ -916,11 +1081,10 @@ public class WorkflowEngine : IAsyncDisposable
     )
     {
         var ctx = instance.Context;
+        var mergedConfig = MergeStepRuntimeConfig(codeHandler, stepDef);
 
         // 创建超时监控
-        var timeoutConfig = stepDef != null
-            ? YamlConfigConverter.ConvertTimeoutConfig(stepDef.Timeout, stepDef.TimeoutAction)
-            : null;
+        var timeoutConfig = YamlConfigConverter.ConvertTimeoutConfig(mergedConfig.Timeout, mergedConfig.TimeoutAction);
         using var timeoutMonitor = timeoutConfig != null
             ? new TimeoutMonitor(stepId, ctx.InstanceId, timeoutConfig, LoggerFactory.Create(b => { }).CreateLogger<TimeoutMonitor>())
             : null;
@@ -946,14 +1110,14 @@ public class WorkflowEngine : IAsyncDisposable
             : null;
         var stepCt = linkedCts?.Token ?? _shutdownCts.Token;
 
-        var shouldRetry = stepDef?.Retry != null;
+        var shouldRetry = mergedConfig.Retry != null;
         StepResult result;
 
         try
         {
             if (shouldRetry)
             {
-                var retryConfig = YamlConfigConverter.ConvertRetryConfig(stepDef!.Retry!);
+                var retryConfig = YamlConfigConverter.ConvertRetryConfig(mergedConfig.Retry!);
                 result = await _retryExecutor.ExecuteWithRetryAsync<StepResult>(async innerCt =>
                 {
                     var r = await codeHandler.ExecuteAsync(ctx, innerCt);
@@ -978,7 +1142,7 @@ public class WorkflowEngine : IAsyncDisposable
             MarkFailed(record, $"步骤超时: {ex.Message}", ex.ToString());
             record.FullStackTrace = ex.ToString();
 
-            var errorPolicy = stepDef != null ? YamlConfigConverter.ConvertErrorPolicy(stepDef.ErrorPolicy) : null;
+            var errorPolicy = YamlConfigConverter.ConvertErrorPolicy(mergedConfig.ErrorPolicy);
             if (errorPolicy != null)
             {
                 await _errorHandler.HandleErrorAsync(instance, record, ex, errorPolicy.Value, ct);
@@ -1019,7 +1183,7 @@ public class WorkflowEngine : IAsyncDisposable
             MarkFailed(record, ex.Message, ex.ToString());
             record.FullStackTrace = ex.ToString();
 
-            var errorPolicy = stepDef != null ? YamlConfigConverter.ConvertErrorPolicy(stepDef.ErrorPolicy) : null;
+            var errorPolicy = YamlConfigConverter.ConvertErrorPolicy(mergedConfig.ErrorPolicy);
             if (errorPolicy != null)
             {
                 await _errorHandler.HandleErrorAsync(instance, record, ex, errorPolicy.Value, ct);
@@ -1062,7 +1226,7 @@ public class WorkflowEngine : IAsyncDisposable
             );
             record.FullStackTrace = result.Error?.ToString();
 
-            var errorPolicy = stepDef != null ? YamlConfigConverter.ConvertErrorPolicy(stepDef.ErrorPolicy) : null;
+            var errorPolicy = YamlConfigConverter.ConvertErrorPolicy(mergedConfig.ErrorPolicy);
             if (errorPolicy != null && result.Error != null)
             {
                 await _errorHandler.HandleErrorAsync(instance, record, result.Error, errorPolicy.Value, ct);
@@ -1169,11 +1333,10 @@ public class WorkflowEngine : IAsyncDisposable
     )
     {
         var ctx = instance.Context;
+        var mergedConfig = MergeStepRuntimeConfig(approvalHandler, stepDef);
 
         // 创建超时监控
-        var timeoutConfig = stepDef != null
-            ? YamlConfigConverter.ConvertTimeoutConfig(stepDef.Timeout, stepDef.TimeoutAction)
-            : null;
+        var timeoutConfig = YamlConfigConverter.ConvertTimeoutConfig(mergedConfig.Timeout, mergedConfig.TimeoutAction);
         using var timeoutMonitor = timeoutConfig != null
             ? new TimeoutMonitor(stepId, ctx.InstanceId, timeoutConfig, LoggerFactory.Create(b => { }).CreateLogger<TimeoutMonitor>())
             : null;
@@ -1375,11 +1538,10 @@ public class WorkflowEngine : IAsyncDisposable
     )
     {
         var parentCtx = parentInstance.Context;
+        var mergedConfig = MergeStepRuntimeConfig(subWorkflowHandler, stepDef);
 
         // 创建超时监控（监控子工作流整体执行时间）
-        var timeoutConfig = stepDef != null
-            ? YamlConfigConverter.ConvertTimeoutConfig(stepDef.Timeout, stepDef.TimeoutAction)
-            : null;
+        var timeoutConfig = YamlConfigConverter.ConvertTimeoutConfig(mergedConfig.Timeout, mergedConfig.TimeoutAction);
         using var timeoutMonitor = timeoutConfig != null
             ? new TimeoutMonitor(stepId, parentCtx.InstanceId, timeoutConfig, LoggerFactory.Create(b => { }).CreateLogger<TimeoutMonitor>())
             : null;
@@ -1418,7 +1580,9 @@ public class WorkflowEngine : IAsyncDisposable
             var subWorkflowContext = new WorkflowContext
             {
                 InstanceId = $"sub-{parentCtx.InstanceId}-{stepId}",
-                InitialInput = subWorkflowInput
+                InitialInput = subWorkflowInput,
+                WorkflowName = workflowName,
+                WorkflowId = definition.Id,
             };
 
             _logger.LogInformation(
@@ -1454,7 +1618,7 @@ public class WorkflowEngine : IAsyncDisposable
                     if (entryStepId == null)
                         throw new InvalidOperationException($"工作流 {workflowName} 没有定义步骤");
 
-                    await subWorkflowEngine.StartAsync(entryStepId, subWorkflowContext, ct);
+                    await subWorkflowEngine.StartAsync(entryStepId, subWorkflowContext, ct, workflowName);
 
                     // 使用 500ms 间隔轮询等待子工作流完成（相比 100ms 减少 80% 的轮询次数）
                     while (true)
@@ -1539,12 +1703,11 @@ public class WorkflowEngine : IAsyncDisposable
     )
     {
         var ctx = instance.Context;
+        var mergedConfig = MergeStepRuntimeConfig(delayHandler, stepDef);
 
         // Delay 步骤：delay 本身是一种 timeout，此处仅记录配置
         // 超时监控在 delay 本身完成前不触发，仅用于外部超时覆盖
-        var timeoutConfig = stepDef != null
-            ? YamlConfigConverter.ConvertTimeoutConfig(stepDef.Timeout, stepDef.TimeoutAction)
-            : null;
+        var timeoutConfig = YamlConfigConverter.ConvertTimeoutConfig(mergedConfig.Timeout, mergedConfig.TimeoutAction);
         using var timeoutMonitor = timeoutConfig != null
             ? new TimeoutMonitor(stepId, ctx.InstanceId, timeoutConfig, LoggerFactory.Create(b => { }).CreateLogger<TimeoutMonitor>())
             : null;
@@ -2008,9 +2171,14 @@ public class WorkflowEngine : IAsyncDisposable
                 return;
             }
 
+            // 从 StepDefinition 或 Handler 解析 RouteName/EventType（YAML 可覆盖 Handler 虚属性）
+            var recoveryStepDef = GetStepDefinition(instance.WorkflowName, stepId);
+            var recoveryRouteName = !string.IsNullOrWhiteSpace(recoveryStepDef?.RouteName) ? recoveryStepDef!.RouteName : agentHandler.RouteName;
+            var recoveryEventType = !string.IsNullOrWhiteSpace(recoveryStepDef?.EventType) ? recoveryStepDef!.EventType : agentHandler.EventType;
+
             await _webhookClient.SendRawAsync(
-                agentHandler.RouteName,
-                agentHandler.EventType,
+                recoveryRouteName,
+                recoveryEventType,
                 inputSnapshot,
                 ct: opCts.Token);
 

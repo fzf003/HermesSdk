@@ -25,20 +25,13 @@ public static class YamlConfigConverter
         var config = new RetryConfig
         {
             MaxRetries = yamlConfig.MaxRetries,
-            BackoffFactor = yamlConfig.BackoffFactor
+            BackoffFactor = yamlConfig.BackoffFactor ?? 2.0
         };
 
-        // 解析重试策略
-        if (!string.IsNullOrEmpty(yamlConfig.Policy))
+        // 解析重试策略（已由 RetryPolicyConverter 转换为枚举）
+        if (yamlConfig.Policy.HasValue)
         {
-            config.Policy = yamlConfig.Policy.ToLower() switch
-            {
-                "fixed" or "fixed_interval" => RetryPolicy.FixedInterval,
-                "exponential_backoff" or "exponential" => RetryPolicy.ExponentialBackoff,
-                "immediate" => RetryPolicy.Immediate,
-                "custom" => RetryPolicy.Custom,
-                _ => RetryPolicy.ExponentialBackoff
-            };
+            config.Policy = yamlConfig.Policy.Value;
         }
 
         // 解析初始延迟

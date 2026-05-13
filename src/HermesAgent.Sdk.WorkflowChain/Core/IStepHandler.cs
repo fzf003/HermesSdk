@@ -22,6 +22,10 @@ public abstract class StepHandlerBase : IStepHandler
 {
     public abstract string StepId { get; }
     public abstract Task<StepResult> ExecuteAsync(WorkflowContext context, CancellationToken ct);
+    public virtual string? Timeout => null;
+    public virtual string? TimeoutAction => null;
+    public virtual RetryConfigYaml? Retry => null;
+    public virtual string? ErrorPolicy => null;
 
     /// <summary>
     /// 步骤级心跳扩展时长。当返回 null 时使用全局心跳阈值；

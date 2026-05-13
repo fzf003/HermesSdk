@@ -13,7 +13,7 @@ public class HotReloadSafetyTests
         WorkflowRegistry registry,
         WorkflowImportExportManager importExport,
         ILogger<WorkflowHotReloadManager>? logger = null)
-        => new(registry, importExport, logger ?? NullLogger<WorkflowHotReloadManager>.Instance);
+        => new(registry, importExport, engine: null, logger ?? NullLogger<WorkflowHotReloadManager>.Instance);
 
     // =====================================================================
     // 9.5 异常安全测试：异常不崩溃进程、失败时记录日志

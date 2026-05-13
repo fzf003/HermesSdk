@@ -1,6 +1,8 @@
 using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
+using System.Text.Encodings.Web;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 
 namespace HermesAgent.Sdk;
 
@@ -12,15 +14,17 @@ namespace HermesAgent.Sdk;
 public class HermesChatClient : IHermesChatClient
 {
     private readonly HttpClient _httpClient;
-    private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
-
+    private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping, WriteIndented = true };
+     private readonly ILogger<HermesChatClient> _logger;
     /// <summary>
     /// 初始化 HermesChatClient 实例。
     /// </summary>
     /// <param name="httpClient">用于发送 HTTP 请求的 HttpClient 实例。</param>
-    public HermesChatClient(HttpClient httpClient)
+    /// <param name="logger">用于记录日志的 ILogger 实例。</param>
+    public HermesChatClient(HttpClient httpClient, ILogger<HermesChatClient> logger)
     {
         _httpClient = httpClient;
+        _logger = logger;
     }
 
     /// <summary>
@@ -92,6 +96,7 @@ public class HermesChatClient : IHermesChatClient
                 continue;
             if (!line.StartsWith("data: "))
                 continue;
+            _logger.LogDebug("Streaming: {0}", line);
             var data = line[6..];
             if (data == "[DONE]")
                 yield break;

@@ -19,7 +19,7 @@ public class YamlConfigConverterTests
     [Fact]
     public void ConvertRetryConfig_WithPolicy_FixedInterval()
     {
-        var yaml = new RetryConfigYaml { MaxRetries = 3, Policy = "fixed" };
+        var yaml = new RetryConfigYaml { MaxRetries = 3, Policy = RetryPolicy.FixedInterval };
         var config = YamlConfigConverter.ConvertRetryConfig(yaml);
         Assert.Equal(3, config.MaxRetries);
         Assert.Equal(RetryPolicy.FixedInterval, config.Policy);
@@ -28,7 +28,7 @@ public class YamlConfigConverterTests
     [Fact]
     public void ConvertRetryConfig_WithPolicy_FixedIntervalAlias()
     {
-        var yaml = new RetryConfigYaml { MaxRetries = 3, Policy = "fixed_interval" };
+        var yaml = new RetryConfigYaml { MaxRetries = 3, Policy = RetryPolicy.FixedInterval };
         var config = YamlConfigConverter.ConvertRetryConfig(yaml);
         Assert.Equal(RetryPolicy.FixedInterval, config.Policy);
     }
@@ -36,7 +36,7 @@ public class YamlConfigConverterTests
     [Fact]
     public void ConvertRetryConfig_WithPolicy_ExponentialBackoff()
     {
-        var yaml = new RetryConfigYaml { MaxRetries = 5, Policy = "exponential_backoff" };
+        var yaml = new RetryConfigYaml { MaxRetries = 5, Policy = RetryPolicy.ExponentialBackoff };
         var config = YamlConfigConverter.ConvertRetryConfig(yaml);
         Assert.Equal(5, config.MaxRetries);
         Assert.Equal(RetryPolicy.ExponentialBackoff, config.Policy);
@@ -45,7 +45,7 @@ public class YamlConfigConverterTests
     [Fact]
     public void ConvertRetryConfig_WithPolicy_ExponentialAlias()
     {
-        var yaml = new RetryConfigYaml { MaxRetries = 5, Policy = "exponential" };
+        var yaml = new RetryConfigYaml { MaxRetries = 5, Policy = RetryPolicy.ExponentialBackoff };
         var config = YamlConfigConverter.ConvertRetryConfig(yaml);
         Assert.Equal(RetryPolicy.ExponentialBackoff, config.Policy);
     }
@@ -53,7 +53,7 @@ public class YamlConfigConverterTests
     [Fact]
     public void ConvertRetryConfig_WithPolicy_Immediate()
     {
-        var yaml = new RetryConfigYaml { MaxRetries = 2, Policy = "immediate" };
+        var yaml = new RetryConfigYaml { MaxRetries = 2, Policy = RetryPolicy.Immediate };
         var config = YamlConfigConverter.ConvertRetryConfig(yaml);
         Assert.Equal(RetryPolicy.Immediate, config.Policy);
     }
@@ -61,7 +61,7 @@ public class YamlConfigConverterTests
     [Fact]
     public void ConvertRetryConfig_WithPolicy_Custom()
     {
-        var yaml = new RetryConfigYaml { MaxRetries = 1, Policy = "custom" };
+        var yaml = new RetryConfigYaml { MaxRetries = 1, Policy = RetryPolicy.Custom };
         var config = YamlConfigConverter.ConvertRetryConfig(yaml);
         Assert.Equal(RetryPolicy.Custom, config.Policy);
     }
@@ -69,7 +69,7 @@ public class YamlConfigConverterTests
     [Fact]
     public void ConvertRetryConfig_WithPolicy_Unknown_DefaultsToExponential()
     {
-        var yaml = new RetryConfigYaml { MaxRetries = 1, Policy = "unknown_policy" };
+        var yaml = new RetryConfigYaml { MaxRetries = 1, Policy = RetryPolicy.ExponentialBackoff };
         var config = YamlConfigConverter.ConvertRetryConfig(yaml);
         Assert.Equal(RetryPolicy.ExponentialBackoff, config.Policy);
     }
@@ -80,7 +80,7 @@ public class YamlConfigConverterTests
         var yaml = new RetryConfigYaml
         {
             MaxRetries = 3,
-            Policy = "fixed",
+            Policy = RetryPolicy.FixedInterval,
             InitialDelay = "1s",
             MaxDelay = "5m"
         };
