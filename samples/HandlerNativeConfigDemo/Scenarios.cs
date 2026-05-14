@@ -506,4 +506,81 @@ partial class Program
         PrintIf(yamlChecks.All(c => c.Pass) && allCompleted,
             "✓ 代码→YAML 语义一致: DSL 定义与导出 YAML 配置值完全对齐");
     }
+
+    // =================================================================
+    // Scenario 12: YAML 优先加载 + 自动导出
+    //   展示引擎启动后自动导出 YAML 到配置目录，以及 YAML 优先加载机制。
+    // =================================================================
+    static async Task Scenario12_YamlFirstLoadAndAutoExport(
+        WorkflowEngine engine,
+        WorkflowImportExportManager importExport)
+    {
+        PrintHeader("Scenario 12 — YAML 优先加载 + 自动导出");
+        Console.WriteLine("  引擎启动时自动导出所有已注册 WorkflowDefinition 到配置目录");
+        Console.WriteLine("  下次启动时优先加载 YAML 文件，不存在则从代码构建");
+        Console.WriteLine();
+
+        // Step 1: 检查自动导出的 YAML 文件
+        var configDir = "./workflows";
+        Console.WriteLine($"  Step 1 — 检查自动导出目录: \"{configDir}/\"");
+        Console.WriteLine(new string('─', 60));
+
+        if (!Directory.Exists(configDir))
+        {
+            Console.WriteLine("  (配置目录不存在，跳过)");
+            return;
+        }
+
+        var yamlFiles = Directory.GetFiles(configDir, "*.yaml");
+        if (yamlFiles.Length == 0)
+        {
+            Console.WriteLine("  (暂无自动导出的 YAML 文件)");
+            return;
+        }
+
+        foreach (var file in yamlFiles)
+        {
+            var fileName = Path.GetFileName(file);
+            var content = File.ReadAllText(file);
+
+            Console.WriteLine($"  ├─ {fileName}");
+            var lines = content.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            foreach (var line in lines.Take(8))
+                Console.WriteLine($"  │  {line.TrimEnd()}");
+            if (lines.Length > 8)
+                Console.WriteLine($"  │  ... ({lines.Length - 8} more lines)");
+            Console.WriteLine();
+        }
+
+        Console.WriteLine(new string('─', 60));
+        Console.WriteLine();
+        Console.WriteLine("  Step 2 — YAML 优先加载说明");
+        Console.WriteLine();
+        Console.WriteLine("  下次启动时，引擎执行 Register<T>()/AddWorkflow() 流程：");
+        Console.WriteLine();
+        Console.WriteLine("    ┌─────────────────────────────────────────────────────┐");
+        Console.WriteLine("    │ Register<T>() / AddWorkflow()                       │");
+        Console.WriteLine("    │   ├─ 拼接 YAML 路径                                 │");
+        Console.WriteLine("    │   │   {ConfigDir}/{Name}-{Version}.yaml            │");
+        Console.WriteLine("    │   ├─ 文件存在？                                     │");
+        Console.WriteLine("    │   │   ├─ YES → 解析 YAML                           │");
+        Console.WriteLine("    │   │   │    ├─ 解析失败？  → 回退代码构建 (ERROR)    │");
+        Console.WriteLine("    │   │   │    ├─ 校验失败？  → 回退代码构建 (ERROR)    │");
+        Console.WriteLine("    │   │   │    ├─ 名版不匹配？→ 回退代码构建 (WARN)     │");
+        Console.WriteLine("    │   │   │    ├─ Handler缺失？→ 仍加载 YAML (WARN)    │");
+        Console.WriteLine("    │   │   │    └─ 通过 → 加载 YAML，跳过代码            │");
+        Console.WriteLine("    │   │   └─ NO  → 代码构建（现有流程）                 │");
+        Console.WriteLine("    │   └─ 注册 WorkflowDefinition 到 Registry           │");
+        Console.WriteLine("    │                                                    │");
+        Console.WriteLine("    │  [引擎 OnReady]  → 异步导出 YAML 到配置目录        │");
+        Console.WriteLine("    │   (原子写入: 临时文件 + 重命名)                     │");
+        Console.WriteLine("    └─────────────────────────────────────────────────────┘");
+        Console.WriteLine();
+        Console.WriteLine("  ⚠ 用户可直接编辑 YAML 文件中的 runtime 策略字段");
+        Console.WriteLine("    (timeout/retry/error_policy/prompt/system_prompt)");
+        Console.WriteLine("    重启后引擎优先加载编辑后的 YAML，策略即时生效");
+        Console.WriteLine();
+        Console.WriteLine("  ⚠ 拓扑字段 (depends_on/next_step_id/steps/wait_mode)");
+        Console.WriteLine("    由代码定义，YAML 不参与覆盖，保证流程安全");
+    }
 }

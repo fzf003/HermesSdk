@@ -24,7 +24,7 @@ else
 
     app.UseHttpsRedirection();
 }
- 
+
 // 健康检查端
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTime.Now }));
 
@@ -63,7 +63,7 @@ app.MapPost("/webhooks/dotnet-webhook", async (TestWebhookRequest request, IHerm
 
 app.Run();
 
- 
+
 /// <summary>
 /// 测试 Webhook 请求模型
 /// </summary>

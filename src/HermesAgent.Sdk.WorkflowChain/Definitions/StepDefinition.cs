@@ -27,9 +27,13 @@ public class StepTypeConverter : IYamlTypeConverter
 {
     private static readonly Dictionary<string, StepType> StringToEnum = new()
     {
-        ["agent"] = StepType.Agent, ["code"] = StepType.Code, ["delay"] = StepType.Delay,
-        ["human-approval"] = StepType.HumanApproval, ["workflow"] = StepType.Workflow,
-        ["sequential"] = StepType.Sequential, ["parallel"] = StepType.Parallel,
+        ["agent"] = StepType.Agent,
+        ["code"] = StepType.Code,
+        ["delay"] = StepType.Delay,
+        ["human-approval"] = StepType.HumanApproval,
+        ["workflow"] = StepType.Workflow,
+        ["sequential"] = StepType.Sequential,
+        ["parallel"] = StepType.Parallel,
     };
     private static readonly Dictionary<StepType, string> EnumToString = StringToEnum.ToDictionary(kvp => kvp.Value, kvp => kvp.Key);
     public bool Accepts(Type type) => type == typeof(StepType);
@@ -221,7 +225,7 @@ public class RetryConfigConverter : IYamlTypeConverter
                 }
                 break;
 
-            // Immediate / null: 不输出额外参数
+                // Immediate / null: 不输出额外参数
         }
 
         emitter.Emit(new MappingEnd());

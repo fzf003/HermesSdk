@@ -50,9 +50,10 @@ partial class Program
             Console.WriteLine("  9. Builder Fluent API 配置 (3层优先级, 4步工作流)");
             Console.WriteLine(" 10. 导出代码定义的 YAML (AddWorkflow → ExportToYaml)");
             Console.WriteLine(" 11. DSL 工作流 (Register&lt;T&gt; 类继承式定义)");
-            Console.WriteLine(" 12. 退出");
+            Console.WriteLine(" 12. YAML 优先加载 + 自动导出");
+            Console.WriteLine(" 13. 退出");
             Console.WriteLine("══════════════════════════════════════════════════");
-            Console.Write("请选择 [1-12]: ");
+            Console.Write("请选择 [1-13]: ");
 
             var choice = Console.ReadLine();
             switch (choice)
@@ -91,6 +92,9 @@ partial class Program
                     await Scenario11_DslDemo(engine, bootstrapper, importExport);
                     break;
                 case "12":
+                    await Scenario12_YamlFirstLoadAndAutoExport(engine, importExport);
+                    break;
+                case "13":
                     Console.WriteLine("退出...");
                     await host.StopAsync();
                     CleanupDatabase();
@@ -167,7 +171,7 @@ partial class Program
                                 .WithTimeout("00:00:30")
                                 .WithPrompt("Fluent API 配置的提示词")
                                 .WithSystemPrompt("你是 fluent 助手")
-                                .WithRetry(r=>r.FixedInterval(maxRetries:3,initialDelay: "5s", maxDelay: "00:05:00"))
+                                .WithRetry(r => r.FixedInterval(maxRetries: 3, initialDelay: "5s", maxDelay: "00:05:00"))
                             )
                         ).WithName("s9-fluent-wf").WithVersion("1.0").WithDescription("Builder Fluent API 配置演示");
 

@@ -34,3 +34,4 @@ tests-build.log
 *.db-shm
 *.db-wal
 docs
+palndocs

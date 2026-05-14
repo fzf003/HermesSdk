@@ -149,7 +149,7 @@ class Program
                 break;
 
             case "run.completed":
-                
+
                 Console.WriteLine(evt.OutPut);
                 break;
             case "error":

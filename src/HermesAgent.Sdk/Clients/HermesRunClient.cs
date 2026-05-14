@@ -72,10 +72,10 @@ public class HermesRunClient : IHermesRunClient
             var line = await reader.ReadLineAsync(ct);
             if (line == null)
                 break;
-            if (string.IsNullOrWhiteSpace(line)|| !line.StartsWith("data: "))
+            if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data: "))
                 continue;
 
- 
+
             var data = line[6..];
             this._logger.LogDebug(data);
             var evt = JsonSerializer.Deserialize<RunEvent>(data, _jsonOptions);

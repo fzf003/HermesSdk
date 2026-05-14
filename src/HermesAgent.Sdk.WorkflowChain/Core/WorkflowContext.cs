@@ -12,9 +12,6 @@ public class WorkflowContext
     /// <summary>所属工作流定义名称（与 AddWorkflow().WithName() / YAML name 一致）</summary>
     public string? WorkflowName { get; set; }
 
-    /// <summary>所属工作流定义 ID（WorkflowDefinition.Id，与 YAML / C# 注册的 workflow 定义一致）</summary>
-    public string? WorkflowId { get; set; }
-
     /// <summary>工作流启动时的输入参数</summary>
     public Dictionary<string, object?> InitialInput { get; init; } = new();
 

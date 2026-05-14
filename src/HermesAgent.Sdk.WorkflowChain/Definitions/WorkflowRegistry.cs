@@ -90,11 +90,15 @@ public class WorkflowRegistry
         return _workflows.Keys
             .Where(k => k.StartsWith($"{name}:"))
             .Select(k => k.Substring(k.IndexOf(':') + 1))
-            .OrderByDescending(v => {
-                try {
+            .OrderByDescending(v =>
+            {
+                try
+                {
                     var parts = ParseVersionParts(v);
                     return (parts.Major, parts.Minor, parts.Patch, parts.PreRelease ?? "");
-                } catch {
+                }
+                catch
+                {
                     return (0, 0, 0, v);
                 }
             });

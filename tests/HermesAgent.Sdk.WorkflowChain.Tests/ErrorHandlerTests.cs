@@ -70,7 +70,6 @@ public class ErrorHandlerTests
         // Assert
         Assert.True(instance.Context.IsRunning); // should NOT stop
         Assert.Equal(StepStatus.Failed, record.Status);
-        Assert.NotNull(instance.Context.Data.ContainsKey("error_step-1"));
     }
 
     // ═══════════════════════════════════════════

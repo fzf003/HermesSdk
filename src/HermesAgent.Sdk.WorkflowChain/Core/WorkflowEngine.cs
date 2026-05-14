@@ -11,26 +11,6 @@ namespace HermesAgent.Sdk.WorkflowChain;
 /// </summary>
 public class WorkflowEngine : IAsyncDisposable
 {
-    /// <summary>
-    /// 步骤运行时策略合并结果。
-    /// 仅包含策略与输入模板字段（timeout/retry/error_policy/prompt），
-    /// 不包含拓扑字段（depends_on/next_step_id/steps/wait_mode）。
-    /// 拓扑由代码定义，不受 YAML 覆盖。
-    /// </summary>
-    private sealed class MergedStepRuntimeConfig
-    {
-        public string? Timeout { get; init; }
-        public string? TimeoutAction { get; init; }
-        public RetryConfigYaml? Retry { get; init; }
-        public string? ErrorPolicy { get; init; }
-        public string? Prompt { get; init; }
-        public string? SystemPrompt { get; init; }
-        public string? RouteName { get; init; }
-        public string? EventType { get; init; }
-        public ApprovalNotificationConfig? Notification { get; init; }
-        public string? HeartbeatExtension { get; init; }
-    }
-
     private readonly Dictionary<string, IStepHandler> _handlers;
     private readonly IHermesWebhookClient _webhookClient;
     private readonly IHermesRunClient _runClient;
@@ -64,9 +44,42 @@ public class WorkflowEngine : IAsyncDisposable
     private volatile bool _initialized;
 
     private readonly IReadOnlyDictionary<Type, StepHandlerDefaults> _fluentDefaults;
+    private readonly IStepRuntimeConfigProvider _configProvider;
 
     private static readonly TimeSpan RecoveryTimeout = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan RecoveryOpTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// 引擎启动完成且状态正常后触发。订阅者异步执行，异常不会传播到引擎。
+    /// </summary>
+    public event Func<CancellationToken, Task>? OnReady;
+
+    /// <summary>
+    /// 触发 OnReady 事件。逐委托执行，单个委托的异常不影响其他订阅者。
+    /// 通常由 <see cref="WorkflowEngineInitializationService"/> 在 <see cref="InitializeAsync"/> 完成后调用。
+    /// </summary>
+    public async Task FireOnReadyAsync(CancellationToken ct = default)
+    {
+        if (OnReady == null) return;
+
+        var delegates = OnReady.GetInvocationList()
+            .Cast<Func<CancellationToken, Task>>()
+            .ToArray();
+
+        foreach (var handler in delegates)
+        {
+            if (ct.IsCancellationRequested) break;
+
+            try
+            {
+                await handler(ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Engine.OnReady 事件处理器执行失败，不影响引擎运行");
+            }
+        }
+    }
 
     public WorkflowEngine(
         IEnumerable<IStepHandler> handlers,
@@ -75,7 +88,8 @@ public class WorkflowEngine : IAsyncDisposable
         ILogger<WorkflowEngine> logger,
         IWorkflowStateStore stateStore,
         WorkflowRegistry? workflowRegistry = null,
-        IReadOnlyDictionary<Type, StepHandlerDefaults>? fluentDefaults = null
+        IReadOnlyDictionary<Type, StepHandlerDefaults>? fluentDefaults = null,
+        IStepRuntimeConfigProvider? configProvider = null
     )
     {
         _handlers = handlers.ToDictionary(h => h.StepId);
@@ -85,6 +99,7 @@ public class WorkflowEngine : IAsyncDisposable
         _stateStore = stateStore;
         _workflowRegistry = workflowRegistry;
         _fluentDefaults = fluentDefaults ?? new Dictionary<Type, StepHandlerDefaults>();
+        _configProvider = configProvider ?? new DefaultStepRuntimeConfigProvider(_fluentDefaults);
 
         // 初始化可靠性组件
         _retryExecutor = new RetryExecutor(LoggerFactory.Create(b => { }).CreateLogger<RetryExecutor>());
@@ -135,54 +150,6 @@ public class WorkflowEngine : IAsyncDisposable
     {
         workflowName ??= "__default__";
         return _stepDefinitions.TryGetValue($"{workflowName}:{stepId}", out var def) ? def : null;
-    }
-
-    /// <summary>
-    /// 合并 YAML StepDefinition 与 Handler 默认值，产生运行时生效的步骤策略。
-    /// 优先级：YAML > Handler 默认值 > 引擎内建默认值。
-    ///
-    /// 明确排除的拓扑字段（不会进入此合并链路）：
-    /// - depends_on / next_step_id / steps / wait_mode
-    /// 这些字段表达流程拓扑或调度关系，不属于步骤执行策略。
-    /// 代码工作流的拓扑由 StepResult 返回值定义，YAML 不参与覆盖。
-    /// </summary>
-    private MergedStepRuntimeConfig MergeStepRuntimeConfig(IStepHandler handler, StepDefinition? stepDef)
-    {
-        var baseHandler = handler as StepHandlerBase;
-        var agentHandler = handler as AgentStepHandler;
-
-        // 读取 Fluent API 配置（如有）
-        _fluentDefaults.TryGetValue(handler.GetType(), out var fluent);
-
-        return new MergedStepRuntimeConfig
-        {
-            Timeout = !string.IsNullOrWhiteSpace(stepDef?.Timeout) ? stepDef!.Timeout
-                    : !string.IsNullOrWhiteSpace(fluent?.Timeout) ? fluent.Timeout
-                    : baseHandler?.Timeout,
-            TimeoutAction = !string.IsNullOrWhiteSpace(stepDef?.TimeoutAction) ? stepDef!.TimeoutAction
-                          : !string.IsNullOrWhiteSpace(fluent?.TimeoutAction) ? fluent.TimeoutAction
-                          : baseHandler?.TimeoutAction,
-            Retry = stepDef?.Retry ?? fluent?.Retry ?? baseHandler?.Retry,
-            ErrorPolicy = !string.IsNullOrWhiteSpace(stepDef?.ErrorPolicy) ? stepDef!.ErrorPolicy
-                        : !string.IsNullOrWhiteSpace(fluent?.ErrorPolicy) ? fluent.ErrorPolicy
-                        : baseHandler?.ErrorPolicy,
-            Prompt = !string.IsNullOrWhiteSpace(stepDef?.Prompt) ? stepDef!.Prompt
-                   : !string.IsNullOrWhiteSpace(fluent?.Prompt) ? fluent.Prompt
-                   : agentHandler?.Prompt,
-            SystemPrompt = !string.IsNullOrWhiteSpace(stepDef?.SystemPrompt) ? stepDef!.SystemPrompt
-                         : !string.IsNullOrWhiteSpace(fluent?.SystemPrompt) ? fluent.SystemPrompt
-                         : agentHandler?.SystemPrompt,
-            RouteName = !string.IsNullOrWhiteSpace(stepDef?.RouteName) ? stepDef!.RouteName
-                      : !string.IsNullOrWhiteSpace(fluent?.RouteName) ? fluent.RouteName
-                      : agentHandler?.RouteName,
-            EventType = !string.IsNullOrWhiteSpace(stepDef?.EventType) ? stepDef!.EventType
-                      : !string.IsNullOrWhiteSpace(fluent?.EventType) ? fluent.EventType
-                      : agentHandler?.EventType,
-            Notification = stepDef?.Notification ?? fluent?.Notification,
-            HeartbeatExtension = !string.IsNullOrWhiteSpace(stepDef?.HeartbeatExtension) ? stepDef!.HeartbeatExtension
-                               : !string.IsNullOrWhiteSpace(fluent?.HeartbeatExtension) ? fluent.HeartbeatExtension
-                               : baseHandler?.HeartbeatExtension?.ToString(),
-        };
     }
 
     private static string? ResolvePromptTemplate(string? promptTemplate, WorkflowContext ctx)
@@ -237,9 +204,6 @@ public class WorkflowEngine : IAsyncDisposable
         {
             instance.WorkflowName = workflowName;
             context.WorkflowName = workflowName;
-
-            if (_workflowRegistry != null && _workflowRegistry.IsRegistered(workflowName))
-                context.WorkflowId = _workflowRegistry.Get(workflowName).Id;
         }
 
         // 为工作流步骤预建 Pending 记录
@@ -845,7 +809,7 @@ public class WorkflowEngine : IAsyncDisposable
     )
     {
         var ctx = instance.Context;
-        var mergedConfig = MergeStepRuntimeConfig(agentHandler, stepDef);
+        var mergedConfig = _configProvider.GetConfig(agentHandler, null, stepDef);
 
         // 解析通信模式：YAML communication_mode > Handler.Mode
         var effectiveMode = ResolveAgentMode(agentHandler, stepDef);
@@ -1089,7 +1053,7 @@ public class WorkflowEngine : IAsyncDisposable
     )
     {
         var ctx = instance.Context;
-        var mergedConfig = MergeStepRuntimeConfig(codeHandler, stepDef);
+        var mergedConfig = _configProvider.GetConfig(codeHandler, null, stepDef);
 
         // 创建超时监控
         var timeoutConfig = YamlConfigConverter.ConvertTimeoutConfig(mergedConfig.Timeout, mergedConfig.TimeoutAction);
@@ -1349,7 +1313,7 @@ public class WorkflowEngine : IAsyncDisposable
     )
     {
         var ctx = instance.Context;
-        var mergedConfig = MergeStepRuntimeConfig(approvalHandler, stepDef);
+        var mergedConfig = _configProvider.GetConfig(approvalHandler, null, stepDef);
 
         // 创建超时监控
         var timeoutConfig = YamlConfigConverter.ConvertTimeoutConfig(mergedConfig.Timeout, mergedConfig.TimeoutAction);
@@ -1554,7 +1518,7 @@ public class WorkflowEngine : IAsyncDisposable
     )
     {
         var parentCtx = parentInstance.Context;
-        var mergedConfig = MergeStepRuntimeConfig(subWorkflowHandler, stepDef);
+        var mergedConfig = _configProvider.GetConfig(subWorkflowHandler, null, stepDef);
 
         // 创建超时监控（监控子工作流整体执行时间）
         var timeoutConfig = YamlConfigConverter.ConvertTimeoutConfig(mergedConfig.Timeout, mergedConfig.TimeoutAction);
@@ -1598,7 +1562,6 @@ public class WorkflowEngine : IAsyncDisposable
                 InstanceId = $"sub-{parentCtx.InstanceId}-{stepId}",
                 InitialInput = subWorkflowInput,
                 WorkflowName = workflowName,
-                WorkflowId = definition.Id,
             };
 
             _logger.LogInformation(
@@ -1640,7 +1603,7 @@ public class WorkflowEngine : IAsyncDisposable
                     while (true)
                     {
                         ct.ThrowIfCancellationRequested();
-                        
+
                         var subInstance = subWorkflowEngine.GetInstance(subWorkflowContext.InstanceId);
                         if (subInstance == null || !subInstance.Context.IsRunning)
                             return subInstance;
@@ -1719,7 +1682,7 @@ public class WorkflowEngine : IAsyncDisposable
     )
     {
         var ctx = instance.Context;
-        var mergedConfig = MergeStepRuntimeConfig(delayHandler, stepDef);
+        var mergedConfig = _configProvider.GetConfig(delayHandler, null, stepDef);
 
         // Delay 步骤：delay 本身是一种 timeout，此处仅记录配置
         // 超时监控在 delay 本身完成前不触发，仅用于外部超时覆盖

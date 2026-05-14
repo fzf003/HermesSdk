@@ -470,7 +470,7 @@ class Program
             })
             .ConfigureAppConfiguration((_, config) =>
             {
-                config.AddJsonFile("appsettings.json", optional: true,reloadOnChange:true);
+                config.AddJsonFile("appsettings.json", optional: true, reloadOnChange: true);
             })
             .ConfigureServices((context, services) =>
             {
@@ -480,7 +480,7 @@ class Program
                     {
                         chain.AddSqliteStateStore($"Data Source={DbPath}");
                         chain.SetHeartbeatThreshold(TimeSpan.FromSeconds(30));
-           
+
                         // 注册所有步骤处理器
                         chain.AddStep<FetchDataStep>();
                         chain.AddStep<NotifyStep>();
@@ -492,7 +492,7 @@ class Program
                         chain.AddStep<BranchAStep>();
                         chain.AddStep<BranchBStep>();
 
-                        
+
                     });
             });
 

@@ -1,3 +1,5 @@
+using Microsoft.Extensions.DependencyInjection;
+
 namespace HermesAgent.Sdk.WorkflowChain.Dsl;
 
 /// <summary>
@@ -68,18 +70,25 @@ internal sealed class DslStepBuilder : IStepBuilder
         // 委托父 Builder 完成 DI 注册（transient，支持构造函数注入）
         _parent.AddCodeStep<T>();
 
-        var handler = Activator.CreateInstance<T>();
+        var stepId = ResolveStepIdFromDi<T>();
         _steps.Add(new HandlerClassEntry(
-            handler.StepId, StepType.Code, new DslCodeStepBuilder(), typeof(T)));
+            stepId, StepType.Code, new DslCodeStepBuilder(), typeof(T)));
     }
 
     public void AddAgentStep<T>() where T : AgentStepHandler
     {
         _parent.AddAgentStep<T>();
 
-        var handler = Activator.CreateInstance<T>();
+        var stepId = ResolveStepIdFromDi<T>();
         _steps.Add(new HandlerClassEntry(
-            handler.StepId, StepType.Agent, new DslAgentStepBuilder(), typeof(T)));
+            stepId, StepType.Agent, new DslAgentStepBuilder(), typeof(T)));
+    }
+
+    private string ResolveStepIdFromDi<T>() where T : IStepHandler
+    {
+        using var sp = _parent.Services.BuildServiceProvider();
+        var resolved = sp.GetRequiredService<T>();
+        return resolved.StepId;
     }
 
     // ── Build ──

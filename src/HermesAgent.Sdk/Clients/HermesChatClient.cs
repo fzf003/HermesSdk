@@ -15,7 +15,7 @@ public class HermesChatClient : IHermesChatClient
 {
     private readonly HttpClient _httpClient;
     private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping, WriteIndented = true };
-     private readonly ILogger<HermesChatClient> _logger;
+    private readonly ILogger<HermesChatClient> _logger;
     /// <summary>
     /// 初始化 HermesChatClient 实例。
     /// </summary>

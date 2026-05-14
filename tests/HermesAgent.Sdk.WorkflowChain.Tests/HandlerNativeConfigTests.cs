@@ -172,7 +172,7 @@ public class HandlerNativeConfigTests
     [Fact]
     public void StepHandlerDefaults_ExtractsFromAgentHandler()
     {
-        var handler = new TestAgentStep("agent-step","agent prompt");
+        var handler = new TestAgentStep("agent-step", "agent prompt");
 
         var defaults = StepHandlerDefaults.FromHandler(handler);
 

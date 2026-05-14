@@ -215,7 +215,7 @@ app.UseHermesWebhook("/webhooks/hermescallback", options =>
         switch (context.EventType)
         {
             case "chat.completed" or "test":
-                 await HandleChatCompleted(context);
+                await HandleChatCompleted(context);
                 break;
             case "run.completed" or "test":
                 await HandleRunCompleted(context);
@@ -245,7 +245,7 @@ app.UseHermesWebhook("/webhooks/hermescallback", options =>
         // await LogErrorAsync(exception, context);
     };
 });
- 
+
 
 
 app.Run();
@@ -256,7 +256,7 @@ app.Run();
 static void LoadEnvFile()
 {
     var environment = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
-    var isDevelopment = string.IsNullOrEmpty(environment) || 
+    var isDevelopment = string.IsNullOrEmpty(environment) ||
                         environment.Equals("Development", StringComparison.OrdinalIgnoreCase);
 
     if (!isDevelopment)
@@ -269,22 +269,22 @@ static void LoadEnvFile()
     foreach (var line in File.ReadLines(envFile))
     {
         var trimmed = line.Trim();
-        
+
         // 跳过空行和注释
         if (string.IsNullOrEmpty(trimmed) || trimmed.StartsWith('#'))
             continue;
-        
+
         // 解析 KEY=VALUE 格式
         var parts = trimmed.Split('=', 2);
         if (parts.Length == 2)
         {
             var key = parts[0].Trim();
             var value = parts[1].Trim();
-            
+
             // 移除值两边的引号（如果存在）
             if (value.StartsWith('"') && value.EndsWith('"'))
                 value = value.Substring(1, value.Length - 2);
-            
+
             Environment.SetEnvironmentVariable(key, value);
         }
     }

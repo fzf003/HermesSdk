@@ -116,7 +116,7 @@ public static class YamlConfigConverter
 
         // 尝试简写格式
         timeSpanString = timeSpanString.Trim().ToLowerInvariant();
-        
+
         if (timeSpanString.EndsWith("s"))
         {
             if (double.TryParse(timeSpanString[..^1], out var seconds))

@@ -58,6 +58,13 @@ public static class WorkflowChainServiceExtensions
         // Fluent API 默认步骤策略配置
         services.AddSingleton<IReadOnlyDictionary<Type, StepHandlerDefaults>>(builder.GetFluentDefaults());
 
+        // IStepRuntimeConfigProvider - 步骤运行时配置源
+        services.AddSingleton<IStepRuntimeConfigProvider>(sp =>
+        {
+            var fluentDefaults = sp.GetRequiredService<IReadOnlyDictionary<Type, StepHandlerDefaults>>();
+            return new DefaultStepRuntimeConfigProvider(fluentDefaults);
+        });
+
         // WorkflowHotReloadManager - 热加载（可选）
         services.AddSingleton<WorkflowHotReloadManager>(sp =>
             new WorkflowHotReloadManager(
@@ -91,6 +98,9 @@ public static class WorkflowChainServiceExtensions
                     heartbeatThreshold));
         }
 
+        // 注册引擎选项
+        services.AddSingleton(builder.Options);
+
         return services;
     }
 }
@@ -106,6 +116,13 @@ public class WorkflowChainBuilder
     private WorkflowRegistry? _workflowRegistry;
     private readonly Dictionary<Type, StepHandlerDefaults> _fluentDefaults = new();
     private readonly List<WorkflowDefinition> _workflowDefinitions = new();
+    private readonly HashSet<string> _handlerStepIds = new();
+
+    /// <summary>DI 服务集合（供 DslStepBuilder 等内部组件使用）</summary>
+    internal IServiceCollection Services => _services;
+
+    /// <summary>工作流引擎选项，控制 YAML 配置目录和自动导出等行为。</summary>
+    public WorkflowEngineOptions Options { get; } = new();
 
     public WorkflowChainBuilder(IServiceCollection services)
     {
@@ -117,6 +134,7 @@ public class WorkflowChainBuilder
     {
         _services.AddTransient<T>();
         _services.AddTransient<IStepHandler, T>();
+        TryTrackStepId<T>();
         return this;
     }
 
@@ -124,6 +142,7 @@ public class WorkflowChainBuilder
     public WorkflowChainBuilder AddStep(IStepHandler handler)
     {
         _services.AddSingleton(handler);
+        _handlerStepIds.Add(handler.StepId);
         return this;
     }
 
@@ -144,6 +163,7 @@ public class WorkflowChainBuilder
             _fluentDefaults[typeof(T)] = stepBuilder.Build();
         }
 
+        TryTrackStepId<T>();
         return this;
     }
 
@@ -164,6 +184,7 @@ public class WorkflowChainBuilder
             _fluentDefaults[typeof(T)] = stepBuilder.Build();
         }
 
+        TryTrackStepId<T>();
         return this;
     }
 
@@ -184,6 +205,7 @@ public class WorkflowChainBuilder
             _fluentDefaults[typeof(T)] = stepBuilder.Build();
         }
 
+        TryTrackStepId<T>();
         return this;
     }
 
@@ -200,8 +222,8 @@ public class WorkflowChainBuilder
         var wfBuilder = new WorkflowStepBuilder(this);
         configure(wfBuilder);
 
-        // 步骤资格校验 — 早于 WithName 执行，fail-fast
-        var (stepDefinitions, errors) = BuildStepDefinitions(wfBuilder.Steps, _fluentDefaults);
+        // 步骤资格校验 — 在注册时尽可能验证 StepId 等元数据
+        var (stepDefinitions, errors) = BuildStepDefinitions(wfBuilder.Steps, _fluentDefaults, _services);
         if (errors.Count > 0)
             throw new InvalidOperationException(
                 $"AddWorkflow 步骤资格校验失败:\n" +
@@ -276,9 +298,36 @@ public class WorkflowChainBuilder
             string.Equals(d.Name, name, StringComparison.Ordinal));
     }
 
-    private static (List<StepDefinition> Steps, List<string> Errors) BuildStepDefinitions(
+    /// <summary>获取已注册的 Handler 步骤 ID 集合（供 YAML 加载时 handler 存在性校验使用）</summary>
+    internal IReadOnlySet<string> GetHandlerStepIds() => _handlerStepIds;
+
+    /// <summary>通过 DI 容器获取 Handler 步骤 ID 并加入跟踪集合</summary>
+    private void TryTrackStepId<T>() where T : IStepHandler
+    {
+        try
+        {
+            var stepId = ResolveStepId(typeof(T), _services);
+            if (!string.IsNullOrWhiteSpace(stepId))
+                _handlerStepIds.Add(stepId);
+        }
+        catch
+        {
+            // 忽略 — 依赖尚未就绪时跳过跟踪，不影响后续运行
+        }
+    }
+
+    /// <summary>从 DI 容器或通过无参构造函数解析 Handler 的 StepId</summary>
+    private static string ResolveStepId(Type handlerType, IServiceCollection services)
+    {
+        using var sp = services.BuildServiceProvider();
+        var resolved = (IStepHandler)sp.GetRequiredService(handlerType);
+        return resolved.StepId;
+    }
+
+    internal static (List<StepDefinition> Steps, List<string> Errors) BuildStepDefinitions(
         IReadOnlyList<StepInfo> steps,
-        IReadOnlyDictionary<Type, StepHandlerDefaults> fluentDefaults)
+        IReadOnlyDictionary<Type, StepHandlerDefaults> fluentDefaults,
+        IServiceCollection services)
     {
         var stepDefinitions = new List<StepDefinition>();
         var errors = new List<string>();
@@ -287,7 +336,7 @@ public class WorkflowChainBuilder
         {
             try
             {
-                var stepId = ReadStepId(step.HandlerType);
+                var stepId = ReadStepId(step.HandlerType, services);
                 if (string.IsNullOrWhiteSpace(stepId))
                 {
                     errors.Add($"步骤 {step.HandlerType.Name}.StepId 返回空值");
@@ -315,10 +364,6 @@ public class WorkflowChainBuilder
                     HeartbeatExtension = fluent?.HeartbeatExtension,
                 });
             }
-            catch (MissingMethodException ex)
-            {
-                errors.Add($"步骤 {step.HandlerType.Name} 缺少无参构造函数 ({ex.Message})");
-            }
             catch (Exception ex)
             {
                 errors.Add($"步骤 {step.HandlerType.Name} 初始化失败: {ex.Message}");
@@ -328,9 +373,8 @@ public class WorkflowChainBuilder
         return (stepDefinitions, errors);
     }
 
-    private static string ReadStepId(Type handlerType)
+    private static string ReadStepId(Type handlerType, IServiceCollection services)
     {
-        var handler = (IStepHandler)Activator.CreateInstance(handlerType)!;
-        return handler.StepId;
+        return ResolveStepId(handlerType, services);
     }
 }

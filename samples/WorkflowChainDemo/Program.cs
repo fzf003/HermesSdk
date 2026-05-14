@@ -36,9 +36,10 @@ class Program
         // =================================================================
         PrintHeader("Phase 1 — 启动工作流");
 
+        var registry = host.Services.GetRequiredService<WorkflowRegistry>();
+
         var context = new WorkflowContext
         {
-            InstanceId = $"demo-{DateTime.Now:yyyyMMddHHmmss}",
             InitialInput = new Dictionary<string, object?>
             {
                 ["title"] = "采购申请 #P2026-0429",
@@ -48,9 +49,8 @@ class Program
             },
         };
 
-        PrintSection($"启动工作流: {context.InstanceId}");
-        var instanceId = await engine.StartAsync("review-agent", context);
-        Console.WriteLine($"  工作流实例 ID: {instanceId}");
+        var instanceId = await engine.StartWorkflowAsync("review-workflow", context, registry);
+        PrintSection($"启动工作流: {instanceId}");
         Console.WriteLine($"  状态: {engine.GetInstance(instanceId)?.Status}");
 
         // =================================================================
@@ -94,6 +94,8 @@ class Program
         // =================================================================
         CleanupDatabase();
         PrintSection("✅ 演示完成");
+        Console.ReadKey(true);
+        await host.StopAsync();
     }
 
     // ================================================================
@@ -118,6 +120,7 @@ class Program
                     .AddHermesAgent(context.Configuration)
                     .AddWorkflowChain(chain =>
                     {
+
                         // SQLite 持久化 → 支持重启恢复
                         chain.AddSqliteStateStore($"Data Source={DbPath}");
 
@@ -126,7 +129,7 @@ class Program
 
                         // AddWorkflow 注册 — 通过 Fluent API 配置默认策略
                         // 优先级: YAML > Fluent 配置 > Handler 虚属性 > 引擎内建
-                        chain.AddWorkflow("review-agent", opt => opt
+                        chain.AddWorkflow(opt => opt
                             .AddAgentStep<ReviewAgentStep>(c => c
                                 .WithTimeout("00:05:00")
                             )
@@ -137,7 +140,11 @@ class Program
                             .AddCodeStep<NotifyCodeStep>(c => c
                                 .WithTimeout("00:00:10")
                             )
-                        );
+                        ).WithName("review-workflow")
+                        .WithVersion("1.0")
+                        .WithDescription("采购审批流程，包含一个Agent步骤和两个Code步骤");
+
+
                     });
 
                 // Null 客户端 — 无需真实 Hermes Server
@@ -198,10 +205,18 @@ class Program
     {
         public override string StepId => "approve-code";
 
+        readonly ILogger<ApproveCodeStep> _logger;
+
+        public ApproveCodeStep(ILogger<ApproveCodeStep> logger)
+        {
+            _logger = logger;
+        }
+
         public override async Task<StepResult> ExecuteAsync(WorkflowContext context, CancellationToken ct)
         {
             var reviewOutput = context.GetOutput<string>("review-agent");
             Console.WriteLine($"  [CodeStep] 读取 review-agent 输出: {reviewOutput}");
+            this._logger.LogInformation($"  [CodeStep] 读取 review-agent 输出: {reviewOutput}");
 
             context.StepOutputs[StepId] = new { decision = "approved", finalAmount = 15000 };
             return Sequential("notify-code", context.StepOutputs[StepId]);

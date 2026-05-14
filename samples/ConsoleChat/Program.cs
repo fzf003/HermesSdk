@@ -113,7 +113,7 @@ class Program
         }
         Console.WriteLine(); // 换行
     }
-     
+
     static IHostBuilder CreateHostBuilder(string[] args) =>
         Host.CreateDefaultBuilder(args)
             .ConfigureAppConfiguration((context, config) =>
@@ -121,12 +121,12 @@ class Program
                 config.AddJsonFile("appsettings.json", optional: true);
                 config.AddUserSecrets<Program>();
                 config.AddEnvironmentVariables();
-         
+
             })
             .ConfigureServices((context, services) =>
             {
                 // 配置 HermesAgent
                 services.AddHermesAgent(context.Configuration);
-              //  services.AddLogging(configure => configure.AddConsole().AddDebug());
+                //  services.AddLogging(configure => configure.AddConsole().AddDebug());
             });
 }
