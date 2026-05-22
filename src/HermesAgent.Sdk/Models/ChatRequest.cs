@@ -20,7 +20,7 @@ public record ChatRequest
     /// 使用场景：提供对话历史，包括系统提示、用户消息和助手回复。
     /// </summary>
     [JsonPropertyName("messages")]
-    public required List<ChatMessage> Messages { get; init; }
+    public required List<ChatMessage> Messages { get; init; }=new();
 
     /// <summary>
     /// 是否启用流式响应，默认 false。

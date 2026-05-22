@@ -8,6 +8,21 @@ namespace HermesAgent.Sdk;
 public interface IHermesChatClient : IDisposable
 {
     /// <summary>
+    /// 当前会话 ID，用于多轮对话上下文延续。
+    /// </summary>
+    string? SessionId { get; }
+
+    /// <summary>
+    /// 开始新会话，清空上下文。
+    /// </summary>
+    void NewSession();
+
+    /// <summary>
+    /// 设置指定的会话 ID，用于恢复之前的对话上下文。
+    /// </summary>
+    void SetSession(string sessionId);
+
+    /// <summary>
     /// 简单问答接口。
     /// 使用场景：快速提问并获取文本回答，无需复杂配置。
     /// </summary>

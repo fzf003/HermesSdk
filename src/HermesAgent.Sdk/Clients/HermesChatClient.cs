@@ -16,6 +16,8 @@ public class HermesChatClient : IHermesChatClient
     private readonly HttpClient _httpClient;
     private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping, WriteIndented = true };
     private readonly ILogger<HermesChatClient> _logger;
+    private string? _sessionId;
+
     /// <summary>
     /// 初始化 HermesChatClient 实例。
     /// </summary>
@@ -26,6 +28,15 @@ public class HermesChatClient : IHermesChatClient
         _httpClient = httpClient;
         _logger = logger;
     }
+
+    /// <inheritdoc />
+    public string? SessionId => _sessionId;
+
+    /// <inheritdoc />
+    public void NewSession() => _sessionId = null;
+
+    /// <inheritdoc />
+    public void SetSession(string sessionId) => _sessionId = sessionId;
 
     /// <summary>
     /// 简单问答接口实现。
@@ -66,10 +77,31 @@ public class HermesChatClient : IHermesChatClient
     /// <returns>聊天响应。</returns>
     public async Task<ChatResponse> ChatAsync(ChatRequest request, CancellationToken ct = default)
     {
-        var response = await _httpClient.PostAsJsonAsync("/v1/chat/completions", request, ct);
+        var req = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = JsonContent.Create(request)
+        };
+        if (_sessionId is not null)
+            req.Headers.Add("X-Hermes-Session-Id", _sessionId);
+
+        var response = await _httpClient.SendAsync(req, ct);
         response.EnsureSuccessStatusCode();
+
         var result = await response.Content.ReadFromJsonAsync<ChatResponse>(_jsonOptions, ct);
-        return result ?? throw new InvalidOperationException("Invalid chat response");
+        if (result is null) throw new InvalidOperationException("Invalid chat response");
+
+        // 提取 session ID 用于后续请求
+        if (response.Headers.TryGetValues("X-Hermes-Session-Id", out var sessionValues))
+        {
+            var sid = sessionValues.FirstOrDefault();
+            if (!string.IsNullOrEmpty(sid))
+            {
+                result.SessionId = sid;
+                _sessionId = sid;
+            }
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -82,8 +114,24 @@ public class HermesChatClient : IHermesChatClient
     public async IAsyncEnumerable<ChatStreamChunk> ChatStreamAsync(ChatRequest request, [EnumeratorCancellation] CancellationToken ct = default)
     {
         var streamRequest = request with { Stream = true };
-        using var response = await _httpClient.PostAsJsonAsync("/v1/chat/completions", streamRequest, ct);
+        var req = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = JsonContent.Create(streamRequest)
+        };
+        if (_sessionId is not null)
+            req.Headers.Add("X-Hermes-Session-Id", _sessionId);
+
+        using var response = await _httpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
         response.EnsureSuccessStatusCode();
+
+        // 流式响应也提取 session ID
+        if (response.Headers.TryGetValues("X-Hermes-Session-Id", out var sessionValues))
+        {
+            var sid = sessionValues.FirstOrDefault();
+            if (!string.IsNullOrEmpty(sid))
+                _sessionId = sid;
+        }
+
         using var stream = await response.Content.ReadAsStreamAsync(ct);
         using var reader = new StreamReader(stream);
 

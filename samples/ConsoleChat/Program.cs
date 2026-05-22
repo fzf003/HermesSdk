@@ -18,7 +18,7 @@ class Program
         var chatClient = host.Services.GetRequiredService<IHermesChatClient>();
 
         Console.WriteLine("🤖 Hermes Agent 控制台聊天示例");
-        Console.WriteLine("输入 'exit' 退出，输入 'stream' 切换到流式模式");
+        Console.WriteLine("输入 'exit' 退出，输入 'stream' 切换到流式模式，输入 'new' 重置对话");
         Console.WriteLine("--------------------------------");
 
         var useStreaming = false;
@@ -41,15 +41,30 @@ class Program
                 continue;
             }
 
+            if (input.ToLower() == "new")
+            {
+                chatClient.NewSession();
+                Console.WriteLine("已开始新对话");
+                continue;
+            }
+
+            var request = new ChatRequest
+            {
+                Messages = new List<ChatMessage>
+                {
+                    new ChatMessage("user", input)
+                }
+            };
+
             try
             {
                 if (useStreaming)
                 {
-                    await DemonstrateStreamingChat(chatClient, input);
+                    await DemonstrateStreamingChat(chatClient, request);
                 }
                 else
                 {
-                    await DemonstrateSyncChat(chatClient, input);
+                    await DemonstrateSyncChat(chatClient, request);
                 }
             }
             catch (Exception ex)
@@ -63,18 +78,15 @@ class Program
     /// 演示同步聊天
     /// 使用场景：需要完整响应后再进行下一步处理的场景
     /// </summary>
-    static async Task DemonstrateSyncChat(IHermesChatClient chatClient, string message)
+    static async Task DemonstrateSyncChat(IHermesChatClient chatClient, ChatRequest request)
     {
         Console.Write("AI: ");
 
-        var request = new ChatRequest
+          request= request with
         {
-            Messages = new List<ChatMessage>
-            {
-                new ChatMessage("user", message)
-            },
-            Temperature = 0.7f,
-            MaxTokens = 1000
+            Stream = false,
+            MaxTokens = 1000,
+            Temperature = 0.7f
         };
 
         var response = await chatClient.ChatAsync(request);
@@ -85,11 +97,11 @@ class Program
     /// 演示流式聊天
     /// 使用场景：需要实时显示响应、长文本生成、用户体验更好的场景
     /// </summary>
-    static async Task DemonstrateStreamingChat(IHermesChatClient chatClient, string message)
+    static async Task DemonstrateStreamingChat(IHermesChatClient chatClient, ChatRequest request)
     {
         Console.Write("AI: ");
 
-        var request = new ChatRequest
+      /*  var request = new ChatRequest
         {
             Messages = new List<ChatMessage>
             {
@@ -98,6 +110,13 @@ class Program
             Stream = true,
             Temperature = 0.7f,
             MaxTokens = 1000
+        };*/
+
+       request= request with
+        {
+            Stream = true,
+            MaxTokens = 1000,
+            Temperature = 0.7f
         };
 
         await foreach (var chunk in chatClient.ChatStreamAsync(request))

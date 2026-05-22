@@ -49,6 +49,13 @@ public record ChatResponse
     /// </summary>
     [JsonPropertyName("usage")]
     public UsageInfo? Usage { get; init; }
+
+    /// <summary>
+    /// 会话 ID，从响应头 X-Hermes-Session-Id 获取。
+    /// 用于多轮对话上下文延续。
+    /// </summary>
+    [JsonIgnore]
+    public string? SessionId { get; set; }
 }
 
 /// <summary>
