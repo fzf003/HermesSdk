@@ -16,6 +16,7 @@ class Program
     {
         var host = CreateHostBuilder(args).Build();
         var chatClient = host.Services.GetRequiredService<IHermesChatClient>();
+        var responseclient= host.Services.GetRequiredService<IHermesResponseClient>();
 
         Console.WriteLine("🤖 Hermes Agent 控制台聊天示例");
         Console.WriteLine("输入 'exit' 退出，输入 'stream' 切换到流式模式，输入 'new' 重置对话");
@@ -72,6 +73,13 @@ class Program
                 Console.WriteLine($"❌ 发生错误: {ex.Message}");
             }
         }
+    }
+
+    static async Task ResponseDemonstrateSyncChat(IHermesResponseClient responseClient)
+    {
+        var response = await responseClient.CreateAsync("今天大盘指数多少?");
+
+        Console.WriteLine(response.Output);
     }
 
     /// <summary>

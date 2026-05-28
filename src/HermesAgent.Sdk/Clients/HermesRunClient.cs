@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using System.Net;
 using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
 using System.Text.Encodings.Web;
@@ -9,7 +10,16 @@ namespace HermesAgent.Sdk;
 /// <summary>
 /// Hermes 运行客户端实现，用于执行和监控 AI 运行任务。
 /// 使用场景：应用程序需要执行复杂的 AI 任务、监控运行状态或处理异步运行结果。
-/// 支持启动运行、订阅事件、等待完成和带日志的运行。
+/// 支持启动运行、查询状态、订阅事件、中断运行、审批和等待完成。
+///
+/// <para>对应端点参考：</para>
+/// <list type="table">
+///   <item><term>POST /v1/runs</term><description>StartAsync — 创建异步 Run</description></item>
+///   <item><term>GET /v1/runs/{id}</term><description>GetRunStatusAsync — 轮询状态</description></item>
+///   <item><term>GET /v1/runs/{id}/events</term><description>SubscribeEventsAsync — SSE 事件流</description></item>
+///   <item><term>POST /v1/runs/{id}/stop</term><description>StopRunAsync — 中断 Run</description></item>
+///   <item><term>POST /v1/runs/{id}/approval</term><description>ApproveRunAsync — 审批工具调用</description></item>
+/// </list>
 /// </summary>
 public class HermesRunClient : IHermesRunClient
 {
@@ -36,7 +46,7 @@ public class HermesRunClient : IHermesRunClient
     /// <param name="options">运行选项，如模型、工具等。</param>
     /// <param name="ct">取消令牌。</param>
     /// <returns>运行 ID。</returns>
-    public async Task<string> StartAsync(string prompt, RunOptions? options = null, CancellationToken ct = default)
+    public async Task<RunStartResponse> StartAsync(string prompt, RunOptions? options = null, CancellationToken ct = default)
     {
         var request = new RunRequest
         {
@@ -50,7 +60,7 @@ public class HermesRunClient : IHermesRunClient
         var response = await _httpClient.PostAsJsonAsync("/v1/runs", request, ct);
         response.EnsureSuccessStatusCode();
         var result = await response.Content.ReadFromJsonAsync<RunStartResponse>(_jsonOptions, ct);
-        return result?.RunId ?? throw new InvalidOperationException("Invalid run start response");
+        return result;
     }
 
     /// <summary>
@@ -75,7 +85,6 @@ public class HermesRunClient : IHermesRunClient
             if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data: "))
                 continue;
 
-
             var data = line[6..];
             this._logger.LogDebug(data);
             var evt = JsonSerializer.Deserialize<RunEvent>(data, _jsonOptions);
@@ -96,35 +105,39 @@ public class HermesRunClient : IHermesRunClient
     /// <returns>运行结果。</returns>
     public async Task<RunResult> RunAndWaitAsync(string prompt, RunOptions? options = null, CancellationToken ct = default)
     {
-        var runId = await StartAsync(prompt, options, ct);
-        var result = new RunResult
+        RunResult result = default;
+        try
         {
-            RunId = runId,
-            Status = "pending"
-        };
+            var output = result.Output;
+            var status = result.Status;
+            var errorMessage = result.ErrorMessage;
 
-        var output = result.Output;
-        var status = result.Status;
-        var errorMessage = result.ErrorMessage;
+            await RunWithLoggingAsync(prompt, (@event, taskid) =>
+            {
 
-        await foreach (var evt in SubscribeEventsAsync(runId, ct))
+                if (@event.Type == "run.completion")
+                {
+                    if (@event.Data != null && @event.Data.TryGetValue("content", out var content))
+                        output = content?.ToString();
+                    status = "completed";
+                }
+                else if (@event.Type == "run.error")
+                {
+                    if (@event.Data != null && @event.Data.TryGetValue("message", out var message))
+                        errorMessage = message?.ToString();
+                    status = "failed";
+                }
+
+            }, logger: _logger, ct: ct);
+
+            result = result with { Output = output, Status = status, ErrorMessage = errorMessage };
+        }
+        catch (Exception ex)
         {
-            if (evt.Type == "run.completion")
-            {
-                if (evt.Data != null && evt.Data.TryGetValue("content", out var content))
-                    output = content?.ToString();
-                status = "completed";
-            }
-            else if (evt.Type == "run.error")
-            {
-                if (evt.Data != null && evt.Data.TryGetValue("message", out var message))
-                    errorMessage = message?.ToString();
-                status = "failed";
-            }
-
+            result = new RunResult { Status = "failed", ErrorMessage = ex.Message };
         }
 
-        return result with { Output = output, Status = status, ErrorMessage = errorMessage };
+        return result;
 
     }
 
@@ -136,14 +149,108 @@ public class HermesRunClient : IHermesRunClient
     /// <param name="logger">日志记录器。</param>
     /// <param name="ct">取消令牌。</param>
     /// <returns>任务完成时返回。</returns>
-    public async Task RunWithLoggingAsync(string prompt, ILogger? logger = null, CancellationToken ct = default)
+    public async Task RunWithLoggingAsync(string prompt, Action<RunEvent, string> eventaction = null, ILogger? logger = null, CancellationToken ct = default)
     {
-        var runId = await StartAsync(prompt, null, ct);
-        logger?.LogInformation("🚀 运行已启动 (run {RunId})", runId);
-        await foreach (var evt in SubscribeEventsAsync(runId, ct))
+        var runStart = await StartAsync(prompt, null, ct);
+        logger?.LogInformation("🚀 运行已启动 (run {RunId})", runStart.RunId);
+        await foreach (var evt in SubscribeEventsAsync(runStart.RunId, ct))
         {
             logger?.LogInformation("event {EventType}: {Data}", evt.Type, evt.Data);
+            if (eventaction is not null)
+            {
+                eventaction(evt, runStart.RunId);
+            }
         }
+
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  新增方法 — 补全 /v1/runs 端点能力
+    //  设计依据: API Server 文档 (hermes-api-server-docs.md)
+    //  变更: run-client-complete
+    // ──────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// 查询运行状态。
+    /// 对应 GET /v1/runs/{run_id}。
+    ///
+    /// <para>设计说明：</para>
+    /// <list type="bullet">
+    ///   <item>Server 端 Run 数据存储在内存中（非持久化），终态 1 小时 TTL 后返回 404</item>
+    ///   <item>404 返回 null（不抛异常），其他 HTTP 错误抛异常</item>
+    ///   <item>终态（completed/failed/cancelled）的 <c>output</c> 和 <c>usage</c> 会被填充</item>
+    /// </list>
+    /// </summary>
+    /// <param name="runId">运行 ID。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>运行状态响应；若 Run 不存在或已过期返回 null。</returns>
+    public async Task<RunStatusResponse?> GetRunStatusAsync(string runId, CancellationToken ct = default)
+    {
+        // GET /v1/runs/{run_id} — 文档: "获取 Run 的当前状态（内存中，非持久化）"
+        var response = await _httpClient.GetAsync($"/v1/runs/{runId}", ct);
+
+        // Run 不存在或已过期（1h TTL 后 Server 返回 404）
+        // 设计决策: 返回 null 而非抛异常，调用方无需 try-catch
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            _logger.LogDebug("Run {RunId} not found (may have expired after 1h TTL)", runId);
+            return null;
+        }
+
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<RunStatusResponse>(_jsonOptions, ct);
+    }
+
+    /// <summary>
+    /// 中断正在执行的 Run。
+    /// 对应 POST /v1/runs/{run_id}/stop。
+    ///
+    /// <para>设计说明：</para>
+    /// <list type="bullet">
+    ///   <item>请求体可以为空（Server 不校验 body）</item>
+    ///   <item>返回 status: "stopping"（非同步停止，Server 异步处理）</item>
+    ///   <item>中断流程：agent.interrupt() → task.cancel() → 等待 5s → 返回</item>
+    /// </list>
+    /// </summary>
+    /// <param name="runId">运行 ID。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>中断响应（status: "stopping"）。</returns>
+    public async Task<StopRunResponse> StopRunAsync(string runId, CancellationToken ct = default)
+    {
+        // POST /v1/runs/{run_id}/stop
+        // 文档: "中断正在执行的 Agent。请求体可以为空（{} 或空）"
+        // 使用 null content 发送空 body POST
+        var response = await _httpClient.PostAsync($"/v1/runs/{runId}/stop", content: null, ct);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<StopRunResponse>(_jsonOptions, ct)
+            ?? throw new InvalidOperationException("Invalid stop run response");
+    }
+
+    /// <summary>
+    /// 审批 Run 的挂起审批请求。
+    /// 对应 POST /v1/runs/{run_id}/approval。
+    ///
+    /// <para>设计说明：</para>
+    /// <list type="bullet">
+    ///   <item><c>choice</c>：once（仅当前）、session（本次会话自动批准）、always（永久批准）、deny（拒绝）</item>
+    ///   <item><c>all: true</c> 批量解析所有挂起的审批，false 仅处理最早的一个</item>
+    ///   <item>无挂起审批时 Server 返回 409 → 抛异常</item>
+    ///   <item>无效 choice 值 Server 返回 400 → 抛异常</item>
+    /// </list>
+    /// </summary>
+    /// <param name="runId">运行 ID。</param>
+    /// <param name="approval">审批请求（choice + all）。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>审批响应（含 resolved 计数）。</returns>
+    public async Task<ApprovalResponse> ApproveRunAsync(string runId, ApprovalRequest approval, CancellationToken ct = default)
+    {
+        // POST /v1/runs/{run_id}/approval
+        // 文档: "当 Agent 触发安全审批时，通过此接口批准或拒绝工具调用"
+        // 使用 PostAsJsonAsync 自动序列化 ApprovalRequest → JSON body
+        var response = await _httpClient.PostAsJsonAsync($"/v1/runs/{runId}/approval", approval, ct);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<ApprovalResponse>(_jsonOptions, ct)
+            ?? throw new InvalidOperationException("Invalid approval response");
     }
 
     /// <summary>

@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace HermesAgent.Sdk.WorkflowChain.Tests;
@@ -253,13 +253,24 @@ public class WorkflowYamlConfigIntegrationTests
             => Task.FromResult(new WebhookSendResult { Status = "ok", HttpStatusCode = 200 });
         public Task<WebhookSendResult> SendDirectAsync(string routeName, string message, WebhookOptions? options = null, CancellationToken ct = default)
             => Task.FromResult(new WebhookSendResult { Status = "ok", HttpStatusCode = 200 });
-        public void Dispose() { }
+        
+
+        // 新增: 补全 IHermesRunClient 接口 (run-client-complete)
+        public Task<RunStatusResponse?> GetRunStatusAsync(string runId, CancellationToken ct = default)
+            => Task.FromResult<RunStatusResponse?>(new RunStatusResponse { RunId = runId, Status = "completed" });
+
+        public Task<StopRunResponse> StopRunAsync(string runId, CancellationToken ct = default)
+            => Task.FromResult(new StopRunResponse { RunId = runId, Status = "stopping" });
+
+        public Task<ApprovalResponse> ApproveRunAsync(string runId, ApprovalRequest approval, CancellationToken ct = default)
+            => Task.FromResult(new ApprovalResponse { RunId = runId, Choice = approval.Choice, Resolved = 1 });
+public void Dispose() { }
     }
 
     private sealed class NullRunClient : IHermesRunClient
     {
-        public Task<string> StartAsync(string prompt, RunOptions? options = null, CancellationToken ct = default)
-            => Task.FromResult("run-test");
+        public Task<RunStartResponse> StartAsync(string prompt, RunOptions? options = null, CancellationToken ct = default)
+            => Task.FromResult(new RunStartResponse { RunId = "run-test", Status = "started" });
         public async IAsyncEnumerable<RunEvent> SubscribeEventsAsync(string runId,
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
         {
@@ -267,8 +278,19 @@ public class WorkflowYamlConfigIntegrationTests
         }
         public Task<RunResult> RunAndWaitAsync(string prompt, RunOptions? options = null, CancellationToken ct = default)
             => Task.FromResult(new RunResult { RunId = "run-test", Status = "completed" });
-        public Task RunWithLoggingAsync(string prompt, ILogger? logger = null, CancellationToken ct = default)
+        public Task RunWithLoggingAsync(string prompt, Action<RunEvent,string>? eventaction = null, ILogger? logger = null, CancellationToken ct = default)
             => Task.CompletedTask;
-        public void Dispose() { }
+        
+
+        // 新增: 补全 IHermesRunClient 接口 (run-client-complete)
+        public Task<RunStatusResponse?> GetRunStatusAsync(string runId, CancellationToken ct = default)
+            => Task.FromResult<RunStatusResponse?>(new RunStatusResponse { RunId = runId, Status = "completed" });
+
+        public Task<StopRunResponse> StopRunAsync(string runId, CancellationToken ct = default)
+            => Task.FromResult(new StopRunResponse { RunId = runId, Status = "stopping" });
+
+        public Task<ApprovalResponse> ApproveRunAsync(string runId, ApprovalRequest approval, CancellationToken ct = default)
+            => Task.FromResult(new ApprovalResponse { RunId = runId, Choice = approval.Choice, Resolved = 1 });
+public void Dispose() { }
     }
 }

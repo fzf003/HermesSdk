@@ -4,11 +4,15 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using System.Text.Encodings.Web;
+using System.Text.Json;
 
 /// <summary>
-/// ConsoleRuns 示例程序
-/// 演示 HermesAgent.Sdk Runs API 的四种核心使用模式：
-///   SSE 实时事件流、RunAndWait 阻塞结果、RunWithLogging 日志输出、批量启动
+/// ConsoleRuns 示例程序 — 演示 HermesAgent.Sdk Runs API 全部能力
+///
+/// 覆盖的 API:
+///   StartAsync / GetRunStatusAsync / SubscribeEventsAsync
+///   StopRunAsync / ApproveRunAsync / RunWithLoggingAsync
 /// </summary>
 class Program
 {
@@ -17,12 +21,15 @@ class Program
     private static readonly Dictionary<string, (ConsoleColor Color, string Icon)> EventStyles = new()
     {
         ["run_started"] = (ConsoleColor.Cyan, "🚀"),
-        ["tool_started"] = (ConsoleColor.Yellow, "🔧"),
-        ["tool_completed"] = (ConsoleColor.Green, "✅"),
-        ["reasoning"] = (ConsoleColor.Magenta, "💡"),
-        ["completion"] = (ConsoleColor.White, "🎯"),
-        ["error"] = (ConsoleColor.Red, "❌"),
-        ["cancelled"] = (ConsoleColor.Gray, "🛑"),
+        ["tool.started"] = (ConsoleColor.Yellow, "🔧"),
+        ["tool.completed"] = (ConsoleColor.Green, "✅"),
+        ["reasoning.available"] = (ConsoleColor.Magenta, "💡"),
+        ["message.delta"] = (ConsoleColor.White, "📝"),
+        ["run.completed"] = (ConsoleColor.Green, "🎯"),
+        ["run.failed"] = (ConsoleColor.Red, "❌"),
+        ["run.cancelled"] = (ConsoleColor.Gray, "🛑"),
+        ["approval.request"] = (ConsoleColor.DarkYellow, "⏸️"),
+        ["approval.responded"] = (ConsoleColor.DarkGreen, "▶️"),
     };
 
     static async Task Main(string[] args)
@@ -35,31 +42,35 @@ class Program
         {
             Console.Clear();
             Console.WriteLine("🤖 Hermes Agent Runs API 演示");
-            Console.WriteLine("════════════════════════════════");
-            Console.WriteLine("  1. SSE 实时事件流");
-            Console.WriteLine("  2. RunAndWait 阻塞等待结果");
-            Console.WriteLine("  3. RunWithLogging 结构化日志");
-            Console.WriteLine("  4. 批量启动 (收集 runId)");
-            Console.WriteLine("  5. 退出");
-            Console.WriteLine("════════════════════════════════");
-            Console.Write("请选择 [1-5]: ");
+            Console.WriteLine("══════════════════════════════════════");
+            Console.WriteLine("  1. 实时事件流 + 自动审批    (RunWithLoggingAsync)");
+            Console.WriteLine("  2. 轮询等待结果              (GetRunStatusAsync)");
+            Console.WriteLine("  3. 中断正在执行的 Run        (StopRunAsync)");
+            Console.WriteLine("  4. 交互式手动审批            (ApproveRunAsync)");
+            Console.WriteLine("  5. 批量并发启动              (StartAsync)");
+            Console.WriteLine("  6. 退出");
+            Console.WriteLine("══════════════════════════════════════");
+            Console.Write("请选择 [1-6]: ");
 
             var choice = Console.ReadLine();
             switch (choice)
             {
                 case "1":
-                    await DemonstrateSseEventStream(runClient);
+                    await Demo1_EventStream(runClient);
                     break;
                 case "2":
-                    await DemonstrateRunAndWait(runClient);
+                    await Demo2_Polling(runClient);
                     break;
                 case "3":
-                    await DemonstrateRunWithLogging(runClient, logger);
+                    await Demo3_Stop(runClient);
                     break;
                 case "4":
-                    await DemonstrateBatchStart(runClient);
+                    await Demo4_Approval(runClient);
                     break;
                 case "5":
+                    await Demo5_BatchStart(runClient);
+                    break;
+                case "6":
                     return;
                 default:
                     Console.WriteLine("无效选择，按任意键继续...");
@@ -68,6 +79,10 @@ class Program
             }
         }
     }
+
+    // ═══════════════════════════════════════════
+    //  公共辅助方法
+    // ═══════════════════════════════════════════
 
     static string ReadPrompt(string modeName)
     {
@@ -79,33 +94,50 @@ class Program
         return string.IsNullOrWhiteSpace(input) ? DefaultPrompt : input;
     }
 
-    /// <summary>
-    /// 模式 1: SSE 实时事件流 — 彩色事件类型 + emoji 图标
-    /// </summary>
-    static async Task DemonstrateSseEventStream(IHermesRunClient runClient)
+    /// <summary>打印彩色事件行（供 demo 1/3/4 共用）。</summary>
+    static void PrintEvent(RunEvent evt)
     {
-        var prompt = ReadPrompt("SSE 实时事件流");
+        var timestamp = DateTime.Now.ToString("HH:mm:ss");
+        var (color, icon) = EventStyles.TryGetValue(evt.Type, out var s) ? s : (ConsoleColor.DarkGray, "❓");
+
+        Console.ForegroundColor = ConsoleColor.DarkGray;
+        Console.Write($"{timestamp}  ");
+        Console.ForegroundColor = color;
+        Console.WriteLine($"{icon} {evt.Type,-20}");
+        Console.ResetColor();
+    }
+
+    static string Truncate(string text, int maxLength) =>
+        string.IsNullOrEmpty(text) || text.Length <= maxLength
+            ? text ?? ""
+            : text[..maxLength] + "...";
+
+    // ═══════════════════════════════════════════
+    //  Demo 1: 实时事件流 + 自动审批
+    //  展示: RunWithLoggingAsync + eventaction 回调 + ApprovalRequest.SetSessions()
+    // ═══════════════════════════════════════════
+
+    static async Task Demo1_EventStream(IHermesRunClient runClient)
+    {
+        var prompt = ReadPrompt("实时事件流 + 自动审批");
         Console.Clear();
-        Console.WriteLine($"📡 订阅事件流: {prompt}");
+        Console.WriteLine($"📡 订阅事件流: {Truncate(prompt, 60)}");
         Console.WriteLine(new string('─', 60));
 
         try
         {
-            var runId = await runClient.StartAsync(prompt);
-
-            await foreach (var evt in runClient.SubscribeEventsAsync(runId))
+            // RunWithLoggingAsync 封装了 Start → SubscribeEvents → 等待完成的全流程
+            // eventaction 回调在每个事件到达时触发，可在此做审批 / 打印等
+            await runClient.RunWithLoggingAsync(prompt, eventaction: (@event, runid) =>
             {
-                var timestamp = DateTime.Now.ToString("HH:mm:ss");
-                var (color, icon) = EventStyles.TryGetValue(evt.Type, out var s) ? s : (ConsoleColor.DarkGray, "❓");
+                // 自动批准审批请求（适合非交互场景）
+                if (@event.IsApproval())
+                {
+                    runClient.ApproveRunAsync(runid, ApprovalRequest.Instance.SetSessions());
+                }
 
-                Console.ForegroundColor = ConsoleColor.DarkGray;
-                Console.Write($"{timestamp}  ");
-                Console.ForegroundColor = color;
-                Console.Write($"{icon} {evt.Type,-16}");
-
-                Console.ResetColor();
-                PrintEventDetail(evt);
-            }
+                PrintEvent(@event);
+            });
         }
         catch (Exception ex)
         {
@@ -122,150 +154,257 @@ class Program
         Console.ReadKey(true);
     }
 
-    static void PrintEventDetail(RunEvent evt)
+    // ═══════════════════════════════════════════
+    //  Demo 2: 轮询等待结果
+    //  展示: StartAsync → GetRunStatusAsync 轮询 → 状态迁移可视化
+    // ═══════════════════════════════════════════
+
+    static async Task Demo2_Polling(IHermesRunClient runClient)
     {
-        switch (evt.Type)
+        var prompt = ReadPrompt("轮询等待结果");
+        Console.Clear();
+
+        // 启动 Run
+        var startResp = await runClient.StartAsync(prompt);
+        var runId = startResp.RunId;
+        Console.WriteLine($"🚀 已启动: {runId}");
+        Console.WriteLine(new string('─', 60));
+
+        var lastStatus = "";
+        var attempt = 0;
+
+        // 轮询直到终态
+        while (true)
         {
-            case "run.started":
-                var model = evt.Data?.GetValueOrDefault("model")?.ToString() ?? "?";
-                Console.WriteLine($"模型: {model}");
-                break;
-            case "tool.started":
-                var toolName = evt.Data?.GetValueOrDefault("tool_name")?.ToString() ?? "?";
-                Console.WriteLine(toolName);
-                break;
-            case "tool.completed":
-                var compName = evt.Data?.GetValueOrDefault("tool_name")?.ToString() ?? "?";
-                var duration = evt.Data?.GetValueOrDefault("duration_ms")?.ToString() ?? "?";
-                Console.WriteLine($"{compName} (耗时 {duration}ms)");
-                break;
-            case "reasoning.available":
-                var reasoning = evt.Text; // evt.Data?.GetValueOrDefault("content")?.ToString() ?? "";
-                Console.WriteLine(Truncate(reasoning, 100));
-                break;
-            case "completion":
-                var content = evt.Data?.GetValueOrDefault("content")?.ToString() ?? "";
-                Console.WriteLine(content);
-                break;
+            attempt++;
+            var status = await runClient.GetRunStatusAsync(runId);
 
-            case "run.completed":
+            if (status is null)
+            {
+                Console.WriteLine("⚠️  Run 已过期（超过 1h TTL）");
+                break;
+            }
 
-                Console.WriteLine(evt.OutPut);
+            // 状态变化时打印
+            if (status.Status != lastStatus)
+            {
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine($"  [{attempt:D2}] {lastStatus} → {status.Status}");
+                Console.ResetColor();
+                lastStatus = status.Status;
+            }
+
+            // 终态判断
+            if (status.Status is "completed" or "failed" or "cancelled")
+            {
+                Console.WriteLine(new string('─', 60));
+
+                if (status.Status == "completed")
+                {
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine($"✅ 完成");
+                    if (!string.IsNullOrEmpty(status.Output))
+                        Console.WriteLine($"   Output: {Truncate(status.Output, 200)}");
+                    if (status.Usage is not null)
+                        Console.WriteLine($"   Tokens: {status.Usage.PromptTokens}→{status.Usage.CompletionTokens} (total {status.Usage.TotalTokens})");
+                }
+                else if (status.Status == "failed")
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"❌ 失败: {status.Error ?? "未知错误"}");
+                }
+                else
+                {
+                    Console.ForegroundColor = ConsoleColor.Gray;
+                    Console.WriteLine($"🛑 已取消");
+                }
+                Console.ResetColor();
                 break;
-            case "error":
-                var msg = evt.Data?.GetValueOrDefault("message")?.ToString() ?? "未知错误";
-                Console.WriteLine(msg);
-                break;
-            case "cancelled":
-                var reason = evt.Data?.GetValueOrDefault("reason")?.ToString() ?? "";
-                Console.WriteLine(reason);
-                break;
-            default:
-                Console.WriteLine(evt.Data);
-                break;
+            }
+
+            // 非终态显示进度
+            Console.Write($"  [{attempt:D2}] {status.Status} {status.LastEvent ?? ""}");
+
+            await Task.Delay(1500);
         }
+
+        Console.Write("\n按任意键返回主菜单...");
+        Console.ReadKey(true);
     }
 
-    /// <summary>
-    /// 模式 2: RunAndWait — 阻塞等待 + 旋转动画 + 结果展示
-    /// </summary>
-    static async Task DemonstrateRunAndWait(IHermesRunClient runClient)
-    {
-        var prompt = ReadPrompt("RunAndWait 阻塞等待结果");
-        Console.Clear();
-        Console.WriteLine($"⏳ 正在运行: \"{prompt}\"");
+    // ═══════════════════════════════════════════
+    //  Demo 3: 中断正在执行的 Run
+    //  展示: StartAsync → SubscribeEventsAsync → 用户按键 → StopRunAsync → 轮询确认取消
+    // ═══════════════════════════════════════════
 
-        var animationChars = new[] { '|', '/', '─', '\\' };
-        var animIndex = 0;
+    static async Task Demo3_Stop(IHermesRunClient runClient)
+    {
+        var prompt = ReadPrompt("中断 Run");
+        Console.Clear();
+
+        // 启动 Run
+        var startResp = await runClient.StartAsync(prompt);
+        var runId = startResp.RunId;
+        Console.WriteLine($"🚀 已启动: {runId}");
+        Console.WriteLine("📡 实时事件流中...（按 Enter 中断）");
+        Console.WriteLine(new string('─', 60));
+
         using var cts = new CancellationTokenSource();
-        var animationTask = Task.Run(async () =>
+
+        // 后台监听按键
+        var keyTask = Task.Run(() =>
         {
-            try
-            {
-                while (!cts.Token.IsCancellationRequested)
-                {
-                    Console.Write($"\r⏳ 等待中 {animationChars[animIndex]}  ");
-                    animIndex = (animIndex + 1) % animationChars.Length;
-                    await Task.Delay(200, cts.Token);
-                }
-            }
-            catch (OperationCanceledException) { }
+            Console.ReadLine();
+            cts.Cancel();
         });
 
         try
         {
-            var result = await runClient.RunAndWaitAsync(prompt);
-            cts.Cancel();
-            await Task.WhenAny(animationTask, Task.Delay(100));
-
-            Console.Write("\r                    \r"); // 清除动画行
-            Console.WriteLine("✅ 运行完成！");
-            Console.WriteLine(new string('─', 50));
-            Console.WriteLine($"状态: {result.Status}");
-            Console.WriteLine($"耗时: {(result.DurationMs.HasValue ? $"{result.DurationMs}ms" : "N/A")}");
-            Console.WriteLine($"工具调用: {(result.ToolCallCount.HasValue ? $"{result.ToolCallCount} 次" : "N/A")}");
-            Console.WriteLine(new string('─', 50));
-
-            if (!string.IsNullOrEmpty(result.Output))
+            // 订阅事件流，实时打印
+            await foreach (var evt in runClient.SubscribeEventsAsync(runId, cts.Token))
             {
-                Console.WriteLine("输出:");
-                Console.WriteLine(result.Output);
-            }
+                PrintEvent(evt);
 
-            if (!string.IsNullOrEmpty(result.ErrorMessage))
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine($"错误: {result.ErrorMessage}");
-                Console.ResetColor();
+                if (evt.Type == "run.completed" || evt.Type == "run.failed")
+                {
+                    Console.WriteLine(new string('─', 60));
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine("✅ Run 已完成（无需中断）");
+                    Console.ResetColor();
+                    break;
+                }
             }
         }
-        catch (Exception ex)
+        catch (OperationCanceledException)
         {
-            cts.Cancel();
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"❌ 执行失败: {ex.Message}");
-            Console.ResetColor();
+            // 用户按下 Enter → 中断
+            Console.WriteLine(new string('─', 60));
+            Console.Write("🛑 正在发送中断请求... ");
+
+            var stopResp = await runClient.StopRunAsync(runId);
+            Console.WriteLine($"status: {stopResp.Status}");
+            Console.WriteLine("⏳ 等待确认取消...");
+
+            // 轮询确认已取消
+            for (int i = 0; i < 20; i++)
+            {
+                await Task.Delay(500);
+                var status = await runClient.GetRunStatusAsync(runId);
+                if (status is null || status.Status == "cancelled")
+                {
+                    Console.ForegroundColor = ConsoleColor.Gray;
+                    Console.WriteLine("🛑 Run 已取消");
+                    Console.ResetColor();
+                    break;
+                }
+
+                Console.Write(".");
+            }
         }
 
         Console.Write("\n按任意键返回主菜单...");
         Console.ReadKey(true);
     }
 
-    /// <summary>
-    /// 模式 3: RunWithLogging — 通过 ILogger 输出结构化日志
-    /// </summary>
-    static async Task DemonstrateRunWithLogging(IHermesRunClient runClient, ILogger<Program> logger)
+    // ═══════════════════════════════════════════
+    //  Demo 4: 交互式手动审批
+    //  展示: StartAsync → SubscribeEvents → 用户选择 → ApproveRunAsync
+    // ═══════════════════════════════════════════
+
+    static async Task Demo4_Approval(IHermesRunClient runClient)
     {
-        var prompt = ReadPrompt("RunWithLogging 结构化日志");
+        // 提示用户输入可能触发审批的操作
         Console.Clear();
-        Console.WriteLine($"📋 RunWithLogging 模式");
-        Console.WriteLine($"Prompt: \"{prompt}\"");
+        Console.WriteLine("📌 交互式手动审批");
+        Console.WriteLine("💡 提示: 输入可能触发审批的 prompt（如包含 shell/ping 命令的操作）");
+        Console.WriteLine("   默认: 启动一个需要审批的工具操作");
+        Console.Write("\n输入 prompt: ");
+        var input = Console.ReadLine();
+        var prompt = string.IsNullOrWhiteSpace(input) ? "帮我 ping 一下 baidu.com" : input;
+
+        Console.Clear();
+
+        // 启动 Run
+        var startResp = await runClient.StartAsync(prompt);
+        var runId = startResp.RunId;
+        Console.WriteLine($"🚀 已启动: {runId}");
         Console.WriteLine(new string('─', 60));
 
-        try
+        var completed = false;
+
+        await foreach (var evt in runClient.SubscribeEventsAsync(runId))
         {
-            await runClient.RunWithLoggingAsync(prompt, logger);
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "RunWithLogging 执行失败");
+            PrintEvent(evt);
+
+            // 遇到审批请求 → 交互式选择
+            if (evt.IsApproval())
+            {
+                Console.ForegroundColor = ConsoleColor.DarkYellow;
+                Console.WriteLine(new string('─', 40));
+                Console.WriteLine("⚠️  需要审批工具调用");
+                Console.WriteLine("   [1] once    — 仅本次批准");
+                Console.WriteLine("   [2] session — 本次会话批准");
+                Console.WriteLine("   [3] deny    — 拒绝");
+                Console.Write("请选择 [1-3]: ");
+                Console.ResetColor();
+
+                var choice = Console.ReadLine();
+
+                var approval = choice switch
+                {
+                    "1" => ApprovalRequest.Instance with { Choice = "once" },
+                    "2" => ApprovalRequest.Instance.SetSessions(),
+                    "3" => ApprovalRequest.Instance.SetDeny(),
+                    _ => ApprovalRequest.Instance.SetSessions()
+                };
+
+                var resp = await runClient.ApproveRunAsync(runId, approval);
+                Console.ForegroundColor = ConsoleColor.DarkGreen;
+                Console.WriteLine($"▶️  审批已处理: choice={resp.Choice}, resolved={resp.Resolved}");
+                Console.ResetColor();
+                Console.WriteLine(new string('─', 40));
+            }
+
+            // 完成/失败信号
+            if (evt.Type == "run.completed")
+            {
+                completed = true;
+                Console.WriteLine(new string('─', 60));
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine("✅ Run 完成");
+                Console.ResetColor();
+                break;
+            }
+
+            if (evt.Type == "run.failed")
+            {
+                Console.WriteLine(new string('─', 60));
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("❌ Run 失败");
+                Console.ResetColor();
+                break;
+            }
         }
 
-        Console.WriteLine(new string('─', 60));
+        if (!completed)
+            Console.WriteLine("\n⚠️  事件流结束（可能未触发审批或 Run 已超时）");
+
         Console.Write("\n按任意键返回主菜单...");
         Console.ReadKey(true);
     }
 
-    /// <summary>
-    /// 模式 4: 批量启动 — 逗号分隔多 prompt → 并发 StartAsync → 收集 runId
-    /// </summary>
-    static async Task DemonstrateBatchStart(IHermesRunClient runClient)
+    // ═══════════════════════════════════════════
+    //  Demo 5: 批量并发启动
+    //  展示: StartAsync × N → 收集 RunStartResponse → 表格展示
+    // ═══════════════════════════════════════════
+
+    static async Task Demo5_BatchStart(IHermesRunClient runClient)
     {
         Console.Clear();
         Console.WriteLine("🚀 批量启动模式");
         Console.WriteLine("输入多个 prompt（逗号分隔），将并发启动所有任务。");
-        Console.WriteLine($"默认: \"分析性能瓶颈, 审查代码安全性, 检查依赖版本\"");
-        Console.Write("输入 prompts: ");
+        Console.WriteLine("默认: \"分析项目性能瓶颈, 审查代码安全性, 检查依赖版本兼容性\"");
+        Console.Write("\n输入 prompts: ");
         var input = Console.ReadLine();
 
         var prompts = string.IsNullOrWhiteSpace(input)
@@ -273,32 +412,34 @@ class Program
             : input.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
         Console.Clear();
-        Console.WriteLine($"🚀 批量启动 {prompts.Length} 个任务...");
-        Console.WriteLine(new string('─', 60));
+        Console.WriteLine($"🚀 并发启动 {prompts.Length} 个 Run...");
+        Console.WriteLine(new string('─', 66));
 
         try
         {
+            // 并发启动所有 Run
             var tasks = prompts.Select(async (p, i) =>
             {
-                var runId = await runClient.StartAsync(p);
-                Console.WriteLine($"  [{i + 1}] runId: {runId} ← {Truncate(p, 50)}");
-                return (Index: i + 1, Prompt: p, RunId: runId);
+                var resp = await runClient.StartAsync(p);
+                return (Index: i + 1, Prompt: p, resp.RunId, resp.Status);
             });
 
             var results = await Task.WhenAll(tasks);
 
-            Console.WriteLine(new string('─', 60));
-            Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine($"✅ 全部 {results.Length} 个任务已启动！");
-            Console.ResetColor();
-            Console.WriteLine();
-            Console.WriteLine("收集到的 runId 列表:");
+            // 表格展示结果
+            Console.WriteLine($" {"#",-3} {"Run ID",-26} {"Status",-10} Prompt");
+            Console.WriteLine(new string('─', 66));
+
             foreach (var r in results)
             {
-                Console.WriteLine($"  [{r.Index}] {r.RunId} — {Truncate(r.Prompt, 40)}");
+                Console.WriteLine($" {r.Index,-3} {r.RunId,-26} {r.Status,-10} {Truncate(r.Prompt, 40)}");
             }
-            Console.WriteLine();
-            Console.WriteLine("💡 提示: 使用 BatchRuns 示例项目可监控这些任务的实时进度。");
+
+            Console.WriteLine(new string('─', 66));
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine($"✅ 全部 {results.Length} 个 Run 已启动");
+            Console.ResetColor();
+            Console.WriteLine($"\n💡 提示: 使用 GetRunStatusAsync 可轮询这些 Run 的状态。");
         }
         catch (Exception ex)
         {
@@ -311,10 +452,9 @@ class Program
         Console.ReadKey(true);
     }
 
-    static string Truncate(string text, int maxLength) =>
-        string.IsNullOrEmpty(text) || text.Length <= maxLength
-            ? text ?? ""
-            : text[..maxLength] + "...";
+    // ═══════════════════════════════════════════
+    //  应用配置
+    // ═══════════════════════════════════════════
 
     static IHostBuilder CreateHostBuilder(string[] args) =>
         Host.CreateDefaultBuilder(args)

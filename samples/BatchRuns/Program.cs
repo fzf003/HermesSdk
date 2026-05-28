@@ -87,7 +87,8 @@ class Program
         {
             try
             {
-                var runId = await runClient.StartAsync(prompt);
+                var resp = await runClient.StartAsync(prompt);
+                var runId = resp.RunId;
                 var state = new RunState
                 {
                     RunId = runId,

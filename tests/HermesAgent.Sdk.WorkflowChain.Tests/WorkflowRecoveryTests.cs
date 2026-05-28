@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -217,8 +217,8 @@ public class WorkflowRecoveryTests
 
     private sealed class NullRunClient : IHermesRunClient
     {
-        public Task<string> StartAsync(string prompt, RunOptions? options = null, CancellationToken ct = default)
-            => Task.FromResult("run-1");
+        public Task<RunStartResponse> StartAsync(string prompt, RunOptions? options = null, CancellationToken ct = default)
+            => Task.FromResult(new RunStartResponse { RunId = "run-1", Status = "started" });
 
         public async IAsyncEnumerable<RunEvent> SubscribeEventsAsync(
             string runId,
@@ -230,8 +230,18 @@ public class WorkflowRecoveryTests
         public Task<RunResult> RunAndWaitAsync(string prompt, RunOptions? options = null, CancellationToken ct = default)
             => Task.FromResult(new RunResult { RunId = "run-1", Status = "completed" });
 
-        public Task RunWithLoggingAsync(string prompt, ILogger? logger = null, CancellationToken ct = default)
+        public Task RunWithLoggingAsync(string prompt, Action<RunEvent,string>? eventaction = null, ILogger? logger = null, CancellationToken ct = default)
             => Task.CompletedTask;
+
+        // 新增: 补全 IHermesRunClient 接口 (run-client-complete)
+        public Task<RunStatusResponse?> GetRunStatusAsync(string runId, CancellationToken ct = default)
+            => Task.FromResult<RunStatusResponse?>(new RunStatusResponse { RunId = runId, Status = "completed" });
+
+        public Task<StopRunResponse> StopRunAsync(string runId, CancellationToken ct = default)
+            => Task.FromResult(new StopRunResponse { RunId = runId, Status = "stopping" });
+
+        public Task<ApprovalResponse> ApproveRunAsync(string runId, ApprovalRequest approval, CancellationToken ct = default)
+            => Task.FromResult(new ApprovalResponse { RunId = runId, Choice = approval.Choice, Resolved = 1 });
 
         public void Dispose()
         {

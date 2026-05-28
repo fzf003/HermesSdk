@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageId>HermesAgent.Sdk.MicrosoftAgent</PackageId>
+    <Version>1.0.0-beta.1</Version>
+    <Authors>Hermes Agent Team</Authors>
+    <Description>Microsoft Agent Framework (MAF) integration for HermesAgent.Sdk. Provides IChatClient adapter, HermesRunMiddleware, and DI registration.</Description>
+    <PackageTags>hermes;agent;maf;microsoft-agent;ai;chat</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\HermesAgent.Sdk\HermesAgent.Sdk.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Agents.AI" Version="1.6.2" />
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.6.0" />
+    <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.6.0" />
+  </ItemGroup>
+</Project>

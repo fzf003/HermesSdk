@@ -2,7 +2,7 @@ using System.Text.Json.Serialization;
 
 namespace HermesAgent.Sdk;
 
-public record ResponseRequest
+public partial record ResponseRequest
 {
     [JsonPropertyName("model")]
     public string Model { get; init; } = "default";
@@ -18,6 +18,9 @@ public record ResponseRequest
 
     [JsonPropertyName("temperature")]
     public float? Temperature { get; init; }
+
+    [JsonPropertyName("conversation")]
+    public string? Conversation { get; init; }
 
     [JsonPropertyName("previous_response_id")]
     public string? PreviousResponseId { get; init; }

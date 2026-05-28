@@ -17,4 +17,9 @@ public record RunEvent
     /// </summary>
     [JsonPropertyName("text")]
     public string Text { get; init; } = string.Empty;
+    //是否人工审批
+    public bool IsApproval()
+    {
+        return this.Type == "approval.request";
+    }
 }

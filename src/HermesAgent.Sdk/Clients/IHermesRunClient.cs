@@ -5,7 +5,10 @@ namespace HermesAgent.Sdk;
 /// <summary>
 /// Hermes 运行客户端接口，用于执行和监控 AI 运行任务。
 /// 使用场景：需要执行复杂的 AI 任务、监控运行状态或处理异步运行结果时使用。
-/// 支持启动运行、订阅事件、等待完成和带日志的运行。
+/// 支持启动运行、查询状态、订阅事件、中断运行、审批和等待完成。
+/// <remarks>
+/// 对应 Server 端点 <c>/v1/runs</c>。
+/// </remarks>
 /// </summary>
 public interface IHermesRunClient : IDisposable
 {
@@ -17,7 +20,16 @@ public interface IHermesRunClient : IDisposable
     /// <param name="options">运行选项，如模型、工具等。</param>
     /// <param name="ct">取消令牌。</param>
     /// <returns>运行 ID。</returns>
-    Task<string> StartAsync(string prompt, RunOptions? options = null, CancellationToken ct = default);
+    Task<RunStartResponse> StartAsync(string prompt, RunOptions? options = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// 查询运行状态。
+    /// 使用场景：轮询 Run 的当前状态（内存中，非持久化）。
+    /// </summary>
+    /// <param name="runId">运行 ID。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>运行状态响应；若 run 不存在返回 null。</returns>
+    Task<RunStatusResponse?> GetRunStatusAsync(string runId, CancellationToken ct = default);
 
     /// <summary>
     /// 订阅运行事件。
@@ -27,6 +39,25 @@ public interface IHermesRunClient : IDisposable
     /// <param name="ct">取消令牌。</param>
     /// <returns>异步可枚举的运行事件。</returns>
     IAsyncEnumerable<RunEvent> SubscribeEventsAsync(string runId, CancellationToken ct = default);
+
+    /// <summary>
+    /// 中断正在执行的 Run。
+    /// 使用场景：需要提前终止长时间运行的任务。
+    /// </summary>
+    /// <param name="runId">运行 ID。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>中断响应。</returns>
+    Task<StopRunResponse> StopRunAsync(string runId, CancellationToken ct = default);
+
+    /// <summary>
+    /// 审批 Run 的挂起审批请求。
+    /// 使用场景：当 Agent 触发安全审批时，批准或拒绝工具调用。
+    /// </summary>
+    /// <param name="runId">运行 ID。</param>
+    /// <param name="approval">审批请求（choice 为 once/session/always/deny）。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>审批响应。</returns>
+    Task<ApprovalResponse> ApproveRunAsync(string runId, ApprovalRequest approval, CancellationToken ct = default);
 
     /// <summary>
     /// 启动并等待运行完成。
@@ -46,5 +77,5 @@ public interface IHermesRunClient : IDisposable
     /// <param name="logger">日志记录器。</param>
     /// <param name="ct">取消令牌。</param>
     /// <returns>任务完成时返回。</returns>
-    Task RunWithLoggingAsync(string prompt, ILogger? logger = null, CancellationToken ct = default);
+    Task RunWithLoggingAsync(string prompt, Action<RunEvent,string> eventaction = null, ILogger? logger = null, CancellationToken ct = default);
 }

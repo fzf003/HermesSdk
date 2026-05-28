@@ -10,6 +10,18 @@ public record RunRequest
     [JsonPropertyName("model")]
     public string Model { get; init; } = "default";
 
+    [JsonPropertyName("instructions")]
+    public string? Instructions { get; init; }
+
+    [JsonPropertyName("session_id")]
+    public string? SessionId { get; init; }
+
+    [JsonPropertyName("previous_response_id")]
+    public string? PreviousResponseId { get; init; }
+
+    [JsonPropertyName("conversation_history")]
+    public List<ChatMessage>? ConversationHistory { get; init; }
+
     [JsonPropertyName("skills")]
     public List<string>? Skills { get; init; }
 

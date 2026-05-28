@@ -849,7 +849,7 @@ public class WorkflowEngine : IAsyncDisposable
                         string runId;
                         try
                         {
-                            runId = await _runClient.StartAsync(prompt, agentHandler.RunOptions, innerCt);
+                            runId = (await _runClient.StartAsync(prompt, agentHandler.RunOptions, innerCt)).RunId;
                         }
                         catch (Exception ex)
                         {
@@ -872,7 +872,7 @@ public class WorkflowEngine : IAsyncDisposable
                 }
                 else
                 {
-                    var runId = await _runClient.StartAsync(prompt, agentHandler.RunOptions, stepCt);
+                    var runId = (await _runClient.StartAsync(prompt, agentHandler.RunOptions, stepCt)).RunId;
                     _logger.LogDebug("RunClient 已启动: {InstanceId}/{Step}, RunId: {RunId}", ctx.InstanceId, stepId, runId);
 
                     await foreach (var evt in _runClient.SubscribeEventsAsync(runId, stepCt))
