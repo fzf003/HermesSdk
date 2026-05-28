@@ -5,14 +5,17 @@ using NSubstitute;
 
 namespace HermesAgent.Sdk.MicrosoftAgent.Tests;
 
+/// <summary>
+/// Verifies that all adapter requests go through the Responses API
+/// (the Chat Completions path has been removed — single-path routing).
+/// </summary>
 public class AdapterPathDecisionTests
 {
-    private readonly IHermesChatClient _chatClient = Substitute.For<IHermesChatClient>();
     private readonly ILogger<HermesChatClientAdapter> _logger = Substitute.For<ILogger<HermesChatClientAdapter>>();
     private readonly IHermesResponseClient _responseClient = Substitute.For<IHermesResponseClient>();
 
     [Fact]
-    public async Task GetResponseAsync_NullTools_UsesResponsesApi()
+    public async Task GetResponseAsync_NullOptions_UsesResponsesApi()
     {
         _responseClient.CreateAsync(Arg.Any<string>(), Arg.Any<HermesAgent.Sdk.ResponseOptions?>(), Arg.Any<CancellationToken>())
             .Returns(new HermesAgent.Sdk.ResponseResult
@@ -24,32 +27,9 @@ public class AdapterPathDecisionTests
                 }
             });
 
-        var adapter = new HermesChatClientAdapter(_chatClient, _logger, _responseClient);
+        var adapter = new HermesChatClientAdapter(_logger, _responseClient);
 
         var result = await adapter.GetResponseAsync([new MafChatMessage(ChatRole.User, "hello")], options: null);
-
-        await _responseClient.Received(1).CreateAsync(Arg.Any<string>(), Arg.Any<HermesAgent.Sdk.ResponseOptions?>(), Arg.Any<CancellationToken>());
-        await _chatClient.DidNotReceiveWithAnyArgs().ChatAsync(default(HermesAgent.Sdk.ChatRequest)!, default(CancellationToken));
-        Assert.Contains(result.Messages, m => m.Text == "hello");
-    }
-
-    [Fact]
-    public async Task GetResponseAsync_EmptyTools_UsesResponsesApi()
-    {
-        _responseClient.CreateAsync(Arg.Any<string>(), Arg.Any<HermesAgent.Sdk.ResponseOptions?>(), Arg.Any<CancellationToken>())
-            .Returns(new HermesAgent.Sdk.ResponseResult
-            {
-                Id = "resp_1",
-                Output = new List<HermesAgent.Sdk.OutputItem>
-                {
-                    new() { Type = "message", Contents = [new() { Type = "text", Text = "hello" }] }
-                }
-            });
-
-        var adapter = new HermesChatClientAdapter(_chatClient, _logger, _responseClient);
-        var chatOptions = new MafChatOptions { Tools = [] };
-
-        var result = await adapter.GetResponseAsync([new MafChatMessage(ChatRole.User, "hello")], chatOptions);
 
         await _responseClient.Received(1).CreateAsync(Arg.Any<string>(), Arg.Any<HermesAgent.Sdk.ResponseOptions?>(), Arg.Any<CancellationToken>());
         Assert.Contains(result.Messages, m => m.Text == "hello");
@@ -75,7 +55,7 @@ public class AdapterPathDecisionTests
                 }
             });
 
-        var adapter = new HermesChatClientAdapter(_chatClient, _logger, _responseClient);
+        var adapter = new HermesChatClientAdapter(_logger, _responseClient);
         var chatOptions = new MafChatOptions
         {
             Tools = [AIFunctionFactory.Create(() => "echo")],
@@ -83,7 +63,7 @@ public class AdapterPathDecisionTests
 
         var result = await adapter.GetResponseAsync([new MafChatMessage(ChatRole.User, "hello")], chatOptions);
 
-        await _chatClient.DidNotReceiveWithAnyArgs().ChatAsync(default(HermesAgent.Sdk.ChatRequest)!, default(CancellationToken));
+        await _responseClient.Received(1).CreateAsync(Arg.Any<string>(), Arg.Any<HermesAgent.Sdk.ResponseOptions?>(), Arg.Any<CancellationToken>());
         Assert.Contains(result.Messages, m => m.Text!.Contains("Hello from tool"));
     }
 }

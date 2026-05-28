@@ -52,13 +52,9 @@ namespace MafIntegrationDemo.Middleware
             var response = await base.GetResponseAsync(messages, options, cancellationToken);
             stopwatch.Stop();
 
-            if (this.InnerClient is IHermesChatClient innerclient)
+            if (options?.AdditionalProperties?.TryGetValue("hermes-conversation-id", out var convId) == true)
             {
-                response.ConversationId = innerclient.SessionId;
-            }
-            else
-            {
-                response.ConversationId = HermesContext.GetConversationId();
+                response.ConversationId = convId?.ToString();
             }
 
             _logger.LogInformation(

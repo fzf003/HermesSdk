@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace HermesAgent.Sdk;
@@ -25,7 +26,6 @@ public record ResponseResult
 
 public record OutputItem
 {
-
     [JsonPropertyName("type")]
     public string Type { get; init; } = string.Empty;
 
@@ -35,8 +35,9 @@ public record OutputItem
     [JsonPropertyName("content")]
     public List<OutPutContent> Contents { get; init; } = new();
 
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? AdditionalProperties { get; init; }
 }
-
 
 public record OutPutContent
 {
@@ -45,5 +46,7 @@ public record OutPutContent
 
     [JsonPropertyName("text")]
     public string Text { get; init; } = string.Empty;
-    
+
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? AdditionalProperties { get; init; }
 }

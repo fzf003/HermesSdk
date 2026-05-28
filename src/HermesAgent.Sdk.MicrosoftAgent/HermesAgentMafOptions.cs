@@ -7,6 +7,13 @@ namespace HermesAgent.Sdk.MicrosoftAgent;
 public class HermesAgentMafOptions
 {
     /// <summary>
+    /// Whether to enable <see cref="AutoSessionMiddleware"/> in the <c>IChatClient</c> pipeline.
+    /// When enabled, requests without a <c>hermes-conversation-id</c> automatically receive
+    /// a generated Topic ID (<c>"topic-{Guid}"</c>).
+    /// </summary>
+    public bool EnableAutoSession { get; set; } = false;
+
+    /// <summary>
     /// Whether to enable <see cref="HermesRunMiddleware"/> in the <c>IChatClient</c> pipeline.
     /// When enabled, long-running tasks are routed through Hermes Run + SSE mode
     /// if the <c>ChatOptions</c> carries the <c>hermes-use-run</c> flag.

@@ -4,139 +4,65 @@ using NSubstitute;
 
 namespace HermesAgent.Sdk.MicrosoftAgent.Tests;
 
-public class HermesContextTests
-{
-    [Fact]
-    public void SetAndGet_ReturnsSameValue()
-    {
-        HermesContext.SetConversationId("conv_001");
-        var result = HermesContext.GetConversationId();
-        Assert.Equal("conv_001", result);
-        HermesContext.Clear();
-    }
-
-    [Fact]
-    public void Get_WhenNotSet_ReturnsNull()
-    {
-        HermesContext.Clear();
-        var result = HermesContext.GetConversationId();
-        Assert.Null(result);
-    }
-
-    [Fact]
-    public void Clear_RemovesValue()
-    {
-        HermesContext.SetConversationId("conv_001");
-        HermesContext.Clear();
-        Assert.Null(HermesContext.GetConversationId());
-    }
-
-    [Fact]
-    public async Task AsyncLocal_FlowsAcrossAwait()
-    {
-        HermesContext.SetConversationId("conv_async");
-
-        var result = await Task.Run(async () =>
-        {
-            await Task.Delay(10);
-            return HermesContext.GetConversationId();
-        });
-
-        Assert.Equal("conv_async", result);
-        HermesContext.Clear();
-    }
-
-    [Fact]
-    public async Task AsyncLocal_IsIsolatedBetweenParallelTasks()
-    {
-        HermesContext.Clear();
-
-        var task1 = Task.Run(async () =>
-        {
-            HermesContext.SetConversationId("conv_1");
-            await Task.Delay(50);
-            return HermesContext.GetConversationId();
-        });
-
-        var task2 = Task.Run(async () =>
-        {
-            HermesContext.SetConversationId("conv_2");
-            await Task.Delay(50);
-            return HermesContext.GetConversationId();
-        });
-
-        var results = await Task.WhenAll(task1, task2);
-        Assert.Contains("conv_1", results);
-        Assert.Contains("conv_2", results);
-    }
-}
-
+/// <summary>
+/// Tests for <see cref="HermesChatClientAdapter.GetConversationId"/> private method,
+/// which reads the conversation ID from <see cref="Microsoft.Extensions.AI.ChatOptions.AdditionalProperties"/>.
+///
+/// Note: The old <c>HermesContext</c> static class has been removed. Conversation IDs
+/// now flow exclusively through <c>ChatOptions.AdditionalProperties["hermes-conversation-id"]</c>.
+/// </summary>
 public class AdapterGetConversationIdTests
 {
-    private readonly IHermesChatClient _chatClient = Substitute.For<IHermesChatClient>();
     private readonly ILogger<HermesChatClientAdapter> _logger = Substitute.For<ILogger<HermesChatClientAdapter>>();
     private readonly IHermesResponseClient _responseClient = Substitute.For<IHermesResponseClient>();
+
+    private static string? InvokeGetConversationId(MafChatOptions? options)
+    {
+        var method = typeof(HermesChatClientAdapter).GetMethod("GetConversationId",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        return method?.Invoke(null, [options]) as string;
+    }
 
     [Fact]
     public void GetConversationId_FromAdditionalProperties_ReturnsExplicitValue()
     {
-        HermesContext.Clear();
         var options = new MafChatOptions
         {
             AdditionalProperties = new() { ["hermes-conversation-id"] = "conv_explicit" }
         };
 
-        var adapter = new HermesChatClientAdapter(_chatClient, _logger, _responseClient);
-        // Use reflection to test private static method
-        var method = typeof(HermesChatClientAdapter).GetMethod("GetConversationId",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-        var result = method?.Invoke(null, [options]);
+        var result = InvokeGetConversationId(options);
 
         Assert.Equal("conv_explicit", result);
     }
 
     [Fact]
-    public void GetConversationId_FromHermesContext_ReturnsContextValue()
+    public void GetConversationId_NullOptions_ReturnsNull()
     {
-        HermesContext.SetConversationId("conv_context");
-        var adapter = new HermesChatClientAdapter(_chatClient, _logger, _responseClient);
-        var method = typeof(HermesChatClientAdapter).GetMethod("GetConversationId",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        var result = InvokeGetConversationId(null);
 
-        var result = method?.Invoke(null, [null as MafChatOptions]);
-
-        Assert.Equal("conv_context", result);
-        HermesContext.Clear();
+        Assert.Null(result);
     }
 
     [Fact]
-    public void GetConversationId_ExplicitOverridesContext()
+    public void GetConversationId_NoAdditionalProperties_ReturnsNull()
     {
-        HermesContext.SetConversationId("conv_context");
+        var options = new MafChatOptions();
+
+        var result = InvokeGetConversationId(options);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void GetConversationId_EmptyString_ReturnsNull()
+    {
         var options = new MafChatOptions
         {
-            AdditionalProperties = new() { ["hermes-conversation-id"] = "conv_explicit" }
+            AdditionalProperties = new() { ["hermes-conversation-id"] = "" }
         };
 
-        var adapter = new HermesChatClientAdapter(_chatClient, _logger, _responseClient);
-        var method = typeof(HermesChatClientAdapter).GetMethod("GetConversationId",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-
-        var result = method?.Invoke(null, [options]);
-
-        Assert.Equal("conv_explicit", result);
-        HermesContext.Clear();
-    }
-
-    [Fact]
-    public void GetConversationId_NoSource_ReturnsNull()
-    {
-        HermesContext.Clear();
-        var adapter = new HermesChatClientAdapter(_chatClient, _logger, _responseClient);
-        var method = typeof(HermesChatClientAdapter).GetMethod("GetConversationId",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-
-        var result = method?.Invoke(null, [null as MafChatOptions]);
+        var result = InvokeGetConversationId(options);
 
         Assert.Null(result);
     }
@@ -144,7 +70,6 @@ public class AdapterGetConversationIdTests
     [Fact]
     public async Task ConversationId_PassedToResponseOptions_WhenProvided()
     {
-        HermesContext.SetConversationId("conv_test");
         HermesAgent.Sdk.ResponseOptions? captured = null;
 
         _responseClient.CreateAsync(Arg.Any<string>(), Arg.Any<HermesAgent.Sdk.ResponseOptions?>(), Arg.Any<CancellationToken>())
@@ -154,18 +79,21 @@ public class AdapterGetConversationIdTests
                 return Task.FromResult(new HermesAgent.Sdk.ResponseResult { Id = "test", Output = new List<HermesAgent.Sdk.OutputItem>() });
             });
 
-        var adapter = new HermesChatClientAdapter(_chatClient, _logger, _responseClient);
-        await adapter.GetResponseAsync([new MafChatMessage(ChatRole.User, "hello")], options: null);
+        var adapter = new HermesChatClientAdapter(_logger, _responseClient);
+        var options = new MafChatOptions
+        {
+            AdditionalProperties = new() { ["hermes-conversation-id"] = "conv_test" }
+        };
+
+        await adapter.GetResponseAsync([new MafChatMessage(ChatRole.User, "hello")], options);
 
         Assert.NotNull(captured);
         Assert.Equal("conv_test", captured.Conversation);
-        HermesContext.Clear();
     }
 
     [Fact]
     public async Task ResponsesApi_PassesConversationInOptions_WhenConversationIdProvided()
     {
-        HermesContext.SetConversationId("conv_resp");
         HermesAgent.Sdk.ResponseOptions? capturedOptions = null;
 
         _responseClient.CreateAsync(Arg.Any<string>(), Arg.Any<HermesAgent.Sdk.ResponseOptions?>(), Arg.Any<CancellationToken>())
@@ -179,21 +107,22 @@ public class AdapterGetConversationIdTests
                 });
             });
 
-        var adapter = new HermesChatClientAdapter(_chatClient, _logger, _responseClient);
-        var options = new MafChatOptions { Tools = [AIFunctionFactory.Create(() => "echo")] };
+        var adapter = new HermesChatClientAdapter(_logger, _responseClient);
+        var options = new MafChatOptions
+        {
+            AdditionalProperties = new() { ["hermes-conversation-id"] = "conv_resp" },
+            Tools = [AIFunctionFactory.Create(() => "echo")],
+        };
 
         await adapter.GetResponseAsync([new MafChatMessage(ChatRole.User, "hello")], options);
 
         Assert.NotNull(capturedOptions);
         Assert.Equal("conv_resp", capturedOptions.Conversation);
-
-        HermesContext.Clear();
     }
 
     [Fact]
     public async Task ResponsesApi_DoesNotSetConversation_WhenNoConversationId()
     {
-        HermesContext.Clear();
         HermesAgent.Sdk.ResponseOptions? capturedOptions = null;
 
         _responseClient.CreateAsync(Arg.Any<string>(), Arg.Any<HermesAgent.Sdk.ResponseOptions?>(), Arg.Any<CancellationToken>())
@@ -207,10 +136,9 @@ public class AdapterGetConversationIdTests
                 });
             });
 
-        var adapter = new HermesChatClientAdapter(_chatClient, _logger, _responseClient);
-        var options = new MafChatOptions { Tools = [AIFunctionFactory.Create(() => "echo")] };
+        var adapter = new HermesChatClientAdapter(_logger, _responseClient);
 
-        await adapter.GetResponseAsync([new MafChatMessage(ChatRole.User, "hello")], options);
+        await adapter.GetResponseAsync([new MafChatMessage(ChatRole.User, "hello")], options: null);
 
         Assert.NotNull(capturedOptions);
         Assert.Null(capturedOptions.Conversation);

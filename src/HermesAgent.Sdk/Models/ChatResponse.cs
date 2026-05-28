@@ -96,14 +96,14 @@ public record UsageInfo
     /// 提示令牌数（输入）。
     /// 使用场景：计算输入文本的令牌消耗。
     /// </summary>
-    [JsonPropertyName("prompt_tokens")]
+    [JsonPropertyName("input_tokens")]
     public int PromptTokens { get; init; }
 
     /// <summary>
     /// 完成令牌数（输出）。
     /// 使用场景：计算生成文本的令牌消耗。
     /// </summary>
-    [JsonPropertyName("completion_tokens")]
+    [JsonPropertyName("output_tokens")]
     public int CompletionTokens { get; init; }
 
     /// <summary>

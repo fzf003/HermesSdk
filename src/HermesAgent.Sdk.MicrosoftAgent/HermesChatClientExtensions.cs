@@ -1,16 +1,12 @@
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
-using System.Threading.Tasks;
 
 namespace HermesAgent.Sdk.MicrosoftAgent;
 
 /// <summary>
 /// Extension methods for <see cref="IChatClient"/> to create <see cref="ChatClientAgent"/> instances
 /// backed by the Hermes Agent SDK adapter.
-///
-/// <para>This follows the same pattern as Anthropic's <c>AsAIAgent</c> / Ollama's <c>AsAIAgent</c>
-/// in the official MAF ecosystem — one method to go from <c>IChatClient</c> to <c>ChatClientAgent</c>.</para>
 /// </summary>
 public static class HermesChatClientExtensions
 {
@@ -23,8 +19,7 @@ public static class HermesChatClientExtensions
     /// <param name="name">Optional agent name.</param>
     /// <param name="description">Optional agent description.</param>
     /// <param name="tools">Optional tools available to the agent.</param>
-    /// <param name="clientFactory">Optional delegate to customize the <c>IChatClient</c> pipeline
-    /// (e.g., to inject middleware like <c>UseFunctionInvocation</c>).</param>
+    /// <param name="clientFactory">Optional delegate to customize the <c>IChatClient</c> pipeline.</param>
     /// <param name="loggerFactory">Optional logger factory.</param>
     /// <returns>A <see cref="ChatClientAgent"/> backed by the Hermes MAF adapter.</returns>
     public static ChatClientAgent AsHermesAIAgent(
@@ -64,15 +59,22 @@ public static class HermesChatClientExtensions
 
         return new ChatClientAgent(finalClient, options, loggerFactory, services: null);
     }
+
     /// <summary>
-    /// 创建 Hermes 会话（简化版）。
-    /// 生成固定 conversation key 并注入 HermesContext，返回普通 AgentSession。
-    /// 所有轮次使用同一个 key，无需更新。
+    /// Creates an <see cref="AIAgent"/> from the Hermes MAF <c>IChatClient</c> adapter.
     /// </summary>
-    public static async Task<AgentSession> CreateHermesSessionAsync(this ChatClientAgent agent, CancellationToken cancellationToken = default)
+    public static AIAgent AsAIAgent(
+        this IChatClient chatClient,
+        string? instructions = null,
+        string? name = null,
+        string? description = null,
+        ILoggerFactory? loggerFactory = null)
     {
-        var conversationKey = Guid.NewGuid().ToString("N");
-        HermesContext.SetConversationId(conversationKey);
-        return await agent.CreateSessionAsync(cancellationToken);
+        return chatClient.AsHermesAIAgent(
+            model: "default",
+            instructions: instructions,
+            name: name,
+            description: description,
+            loggerFactory: loggerFactory);
     }
 }

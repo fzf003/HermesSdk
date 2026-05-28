@@ -111,18 +111,16 @@ public class ResponseSdkClientTests
     // ──────────────────────────────────────────────
 
     [Fact]
-    public async Task ResponsesApi_PassesConversationFromContext_ToCreateAsync()
+    public async Task ResponsesApi_PassesConversationFromOptions_ToCreateAsync()
     {
-        var chatClient = Substitute.For<IHermesChatClient>();
         var logger = Substitute.For<ILogger<HermesChatClientAdapter>>();
         var responseClient = Substitute.For<IHermesResponseClient>();
-        var capturedOptions = new List<ResponseOptions?>();
+        ResponseOptions? capturedOptions = null;
 
-        // Mock Responses API response
         responseClient.CreateAsync(Arg.Any<string>(), Arg.Any<ResponseOptions?>(), Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                capturedOptions.Add(callInfo.Arg<ResponseOptions?>());
+                capturedOptions = callInfo.Arg<ResponseOptions?>();
                 return new HermesAgent.Sdk.ResponseResult
                 {
                     Id = "resp_111",
@@ -130,35 +128,29 @@ public class ResponseSdkClientTests
                 {
                     new() { Type = "message", Contents = [new() { Type = "text", Text = "hi" }] }
                 }
-            };
-        });
+                };
+            });
 
-        var adapter = new HermesChatClientAdapter(chatClient, logger, responseClient);
+        var adapter = new HermesChatClientAdapter(logger, responseClient);
 
-        // First call: goes through Responses API path (no Tools check)
-        var result1 = await adapter.GetResponseAsync([new MafChatMessage(ChatRole.User, "hi")], options: null);
-        Assert.Contains(result1.Messages, m => m.Text == "hi");
+        // First call without conversation → null
+        await adapter.GetResponseAsync([new MafChatMessage(ChatRole.User, "hi")], options: null);
+        Assert.Null(capturedOptions!.Conversation);
 
-        // Set conversation key
-        HermesContext.SetConversationId("my-session-key");
+        // Second call with conversation in AdditionalProperties → passed through
+        var chatOptions = new MafChatOptions
+        {
+            AdditionalProperties = new() { ["hermes-conversation-id"] = "my-session-key" },
+            Tools = [AIFunctionFactory.Create(() => "hi")],
+        };
+        await adapter.GetResponseAsync([new MafChatMessage(ChatRole.User, "hi again")], chatOptions);
 
-        // Second call: still Responses API, now with Conversation in options
-        var result2 = await adapter.GetResponseAsync(
-            [new MafChatMessage(ChatRole.User, "hi again")],
-            new MafChatOptions { Tools = [AIFunctionFactory.Create(() => "hi")] });
-
-        // Verify: first call had no conversation, second had conversation
-        Assert.Equal(2, capturedOptions.Count);
-        Assert.Null(capturedOptions[0]!.Conversation);
-        Assert.Equal("my-session-key", capturedOptions[1]!.Conversation);
-
-        HermesContext.Clear();
+        Assert.Equal("my-session-key", capturedOptions.Conversation);
     }
 
     [Fact]
     public async Task GetConversationId_UsesExplicitOverride()
     {
-        var chatClient = Substitute.For<IHermesChatClient>();
         var logger = Substitute.For<ILogger<HermesChatClientAdapter>>();
         var responseClient = Substitute.For<IHermesResponseClient>();
 
@@ -169,16 +161,13 @@ public class ResponseSdkClientTests
                 Output = new List<HermesAgent.Sdk.OutputItem>()
             });
 
-        HermesContext.Clear();
-
-        var adapter = new HermesChatClientAdapter(chatClient, logger, responseClient);
+        var adapter = new HermesChatClientAdapter(logger, responseClient);
 
         var chatOptions = new MafChatOptions
         {
             Tools = [AIFunctionFactory.Create(() => "echo")],
+            AdditionalProperties = new() { ["hermes-conversation-id"] = "my-explicit-conv" },
         };
-        // Explicitly set conversation ID via AdditionalProperties
-        chatOptions.AdditionalProperties = new() { ["hermes-conversation-id"] = "my-explicit-conv" };
 
         await adapter.GetResponseAsync([new MafChatMessage(ChatRole.User, "hi")], chatOptions);
 

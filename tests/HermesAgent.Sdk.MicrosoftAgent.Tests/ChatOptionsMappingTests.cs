@@ -6,7 +6,6 @@ namespace HermesAgent.Sdk.MicrosoftAgent.Tests;
 
 public class ChatOptionsMappingTests
 {
-    private readonly IHermesChatClient _chatClient = Substitute.For<IHermesChatClient>();
     private readonly ILogger<HermesChatClientAdapter> _logger = Substitute.For<ILogger<HermesChatClientAdapter>>();
     private readonly IHermesResponseClient _responseClient = Substitute.For<IHermesResponseClient>();
 
@@ -27,7 +26,7 @@ public class ChatOptionsMappingTests
                 return Task.FromResult(_defaultResult);
             });
 
-        var adapter = new HermesChatClientAdapter(_chatClient, _logger, _responseClient);
+        var adapter = new HermesChatClientAdapter(_logger, _responseClient);
 
         await adapter.GetResponseAsync([new MafChatMessage(ChatRole.User, "hi")], new MafChatOptions { Temperature = 0.7f });
 
@@ -45,7 +44,7 @@ public class ChatOptionsMappingTests
                 return Task.FromResult(_defaultResult);
             });
 
-        var adapter = new HermesChatClientAdapter(_chatClient, _logger, _responseClient);
+        var adapter = new HermesChatClientAdapter(_logger, _responseClient);
 
         await adapter.GetResponseAsync([new MafChatMessage(ChatRole.User, "hi")], new MafChatOptions { MaxOutputTokens = 512 });
 
@@ -63,7 +62,7 @@ public class ChatOptionsMappingTests
                 return Task.FromResult(_defaultResult);
             });
 
-        var adapter = new HermesChatClientAdapter(_chatClient, _logger, _responseClient);
+        var adapter = new HermesChatClientAdapter(_logger, _responseClient);
 
         await adapter.GetResponseAsync([new MafChatMessage(ChatRole.User, "hi")], new MafChatOptions { ModelId = "gpt-4" });
 
@@ -81,7 +80,7 @@ public class ChatOptionsMappingTests
                 return Task.FromResult(_defaultResult);
             });
 
-        var adapter = new HermesChatClientAdapter(_chatClient, _logger, _responseClient);
+        var adapter = new HermesChatClientAdapter(_logger, _responseClient);
 
         await adapter.GetResponseAsync([new MafChatMessage(ChatRole.User, "hi")], options: null);
 
