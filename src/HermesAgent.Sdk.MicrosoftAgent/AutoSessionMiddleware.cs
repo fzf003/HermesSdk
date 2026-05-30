@@ -18,6 +18,8 @@ namespace HermesAgent.Sdk.MicrosoftAgent;
 /// downstream components always have a consistent conversation identifier.
 /// </para>
 /// </summary>
+[Obsolete("No longer needed. HermesAgent from HermesAgent.Sdk.AgentAdapter manages " +
+          "conversation IDs natively via AgentSession.ConversationId.")]
 public sealed class AutoSessionMiddleware : DelegatingChatClient
 {
     private const string ConversationIdKey = "hermes-conversation-id";

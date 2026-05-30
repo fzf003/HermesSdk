@@ -8,7 +8,7 @@ public partial record ResponseRequest
     public string Model { get; init; } = "default";
 
     [JsonPropertyName("input")]
-    public required string Input { get; init; }
+    public required dynamic Input { get; init; }
 
     [JsonPropertyName("instructions")]
     public string? Instructions { get; init; }
@@ -28,3 +28,21 @@ public partial record ResponseRequest
     [JsonPropertyName("metadata")]
     public Dictionary<string, string>? Metadata { get; init; }
 }
+
+public record RequestItem
+{
+    
+    [JsonPropertyName("role")]
+    public string Role { get; init; } = string.Empty;
+
+    [JsonPropertyName("content")]
+    public List<dynamic> Content { get; init; } = new();
+
+    public RequestItem(string role)
+    {
+        this.Role = string.Empty;
+    }
+ 
+}
+
+ 

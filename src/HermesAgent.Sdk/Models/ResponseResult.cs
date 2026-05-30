@@ -22,6 +22,9 @@ public record ResponseResult
 
     [JsonPropertyName("usage")]
     public UsageInfo? Usage { get; init; }
+
+    [JsonPropertyName("conversation")]
+    public string? Conversation { get; init; }
 }
 
 public record OutputItem

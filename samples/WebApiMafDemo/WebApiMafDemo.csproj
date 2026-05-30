@@ -10,6 +10,7 @@
 
     <ProjectReference Include="..\..\src\HermesAgent.Sdk\HermesAgent.Sdk.csproj" />
     <ProjectReference Include="..\..\src\HermesAgent.Sdk.MicrosoftAgent\HermesAgent.Sdk.MicrosoftAgent.csproj" />
+    <ProjectReference Include="..\..\src\HermesAgent.Sdk.AgentAdapter\HermesAgent.Sdk.AgentAdapter.csproj" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="10.1.7" />
   </ItemGroup>
 

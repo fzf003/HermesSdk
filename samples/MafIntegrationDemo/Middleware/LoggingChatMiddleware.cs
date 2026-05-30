@@ -1,7 +1,7 @@
 ﻿using System.Diagnostics;
 using System.Threading.Tasks;
 using HermesAgent.Sdk;
-using HermesAgent.Sdk.MicrosoftAgent;
+using HermesAgent.Sdk.AgentAdapter;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -87,19 +87,27 @@ namespace MafIntegrationDemo.Middleware
             _logger = logger;
         }
 
+        protected override IAsyncEnumerable<AgentResponseUpdate> RunCoreStreamingAsync(IEnumerable<ChatMessage> messages, AgentSession? session = null, AgentRunOptions? options = null, CancellationToken cancellationToken = default)
+        {
+            return base.RunCoreStreamingAsync(messages, session, options, cancellationToken);
+        }
+
         protected override async Task<AgentResponse> RunCoreAsync(
             IEnumerable<ChatMessage> messages,
             AgentSession? session = null,
             AgentRunOptions? options = null,
             CancellationToken cancellationToken = default)
         {
-            var sessionId = session is ChatClientAgentSession ccas
-                ? ccas.ConversationId ?? "(no conv id)"
-                : session?.GetHashCode().ToString() ?? "(null)";
+            var sessionId = string.Empty;
 
-            _logger.LogInformation("Agent 请求中间件被调用开始。消息数量: {Count}", messages.Count());
+            if (options?.AdditionalProperties?.TryGetValue("hermes-conversation-id", out var convId) == true)
+            {
+                sessionId = convId?.ToString();
+            }
 
-            _logger.LogInformation("[Agent ▶] Session={SessionId}, Messages={Count}",
+            _logger?.LogDebug("Agent 请求中间件被调用开始。消息数量: {Count}", messages.Count());
+
+            _logger?.LogDebug("[Agent ▶] Session={SessionId}, Messages={Count}",
                 sessionId, messages.Count());
 
             var stopwatch = Stopwatch.StartNew();
@@ -111,18 +119,18 @@ namespace MafIntegrationDemo.Middleware
                 .OfType<FunctionCallContent>();
 
 
-            _logger.LogInformation("[Agent ◀] Latency={Ms}ms, ToolCalls={Tools}",
+            _logger?.LogDebug("[Agent ◀] Latency={Ms}ms, ToolCalls={Tools}",
                 stopwatch.ElapsedMilliseconds, tools.Count());
 
             foreach (var msg in tools)
             {
-                _logger.LogInformation(
+                _logger?.LogDebug(
                     "  - Tool call: {ToolName}({Arguments})",
                     msg.Name,
                     msg.Arguments);
             }
 
-            _logger.LogInformation("Agent 请求中间件被调用结束。消息数量: {Count}", messages.Count());
+            _logger?.LogDebug("Agent 请求中间件被调用结束。消息数量: {Count}", messages.Count());
 
             return response;
         }

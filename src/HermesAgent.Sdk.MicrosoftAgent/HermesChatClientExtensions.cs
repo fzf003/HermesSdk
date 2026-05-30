@@ -8,6 +8,8 @@ namespace HermesAgent.Sdk.MicrosoftAgent;
 /// Extension methods for <see cref="IChatClient"/> to create <see cref="ChatClientAgent"/> instances
 /// backed by the Hermes Agent SDK adapter.
 /// </summary>
+[Obsolete("Use HermesAgent from HermesAgent.Sdk.AgentAdapter instead. " +
+          "Create agent instances via IHermesResponseClient.CreateHermesAgent() or DI.")]
 public static class HermesChatClientExtensions
 {
     /// <summary>

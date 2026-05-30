@@ -1,6 +1,9 @@
+using Microsoft.Extensions.Logging;
 using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
-
+using System.Text.Encodings.Web;
+using System.Text.Json;
+using HermesAgent.Sdk.Extensions;
 namespace HermesAgent.Sdk;
 
 /// <summary>
@@ -11,22 +14,27 @@ namespace HermesAgent.Sdk;
 /// </summary>
 public class HermesResponseClient : IHermesResponseClient
 {
-    private readonly HttpClient _httpClient;
+    readonly HttpClient _httpClient;
+    readonly ILogger _logger;
+    private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping, WriteIndented = true };
 
     /// <summary>
     /// 初始化 HermesResponseClient 实例。
     /// </summary>
     /// <param name="httpClient">用于发送 HTTP 请求的 HttpClient 实例。</param>
-    public HermesResponseClient(HttpClient httpClient)
+    public HermesResponseClient(HttpClient httpClient, ILoggerFactory? loggerFactory = null)
     {
         _httpClient = httpClient;
+        _logger = loggerFactory?.CreateLogger<HermesResponseClient>();
     }
 
     /// <summary>
     /// 创建新响应实现。
     /// </summary>
-    public async Task<ResponseResult> CreateAsync(string input, ResponseOptions? options = null, CancellationToken ct = default)
+    public async Task<ResponseResult> CreateAsync(dynamic input, ResponseOptions? options = null, CancellationToken ct = default)
     {
+        string? responseId = options?.Metadata is { } metadata && metadata.TryGetValue("hermes-response-id", out var id) ? id : null;
+
         var request = new ResponseRequest
         {
             Model = options?.Model ?? "default",
@@ -35,16 +43,21 @@ public class HermesResponseClient : IHermesResponseClient
             Conversation = options?.Conversation,
             MaxOutputTokens = options?.MaxOutputTokens,
             Temperature = options?.Temperature,
-            Metadata = options?.Metadata
+            Metadata = options?.Metadata,
+            PreviousResponseId = responseId
         };
-
+ 
         using var reqmessage = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
         {
             Content = JsonContent.Create(request)
         };
+        _logger?.LogRequest(request);
 
         var response = await _httpClient.SendAsync(reqmessage, ct);
         response.EnsureSuccessStatusCode();
+
+        _logger?.LogResponse(await response.Content.ReadAsStringAsync());
+
         return await response.Content.ReadFromJsonAsync<ResponseResult>(cancellationToken: ct)
             ?? throw new InvalidOperationException("Invalid response result");
     }
@@ -52,7 +65,7 @@ public class HermesResponseClient : IHermesResponseClient
     /// <summary>
     /// 创建流式响应，返回 SSE 数据行流。
     /// </summary>
-    public async IAsyncEnumerable<string> CreateStreamingAsync(string input, ResponseOptions? options = null, [EnumeratorCancellation] CancellationToken ct = default)
+    public async IAsyncEnumerable<string> CreateStreamingAsync(dynamic input, ResponseOptions? options = null, [EnumeratorCancellation] CancellationToken ct = default)
     {
         var request = new ResponseRequest
         {
@@ -127,8 +140,10 @@ public class HermesResponseClient : IHermesResponseClient
         return response.IsSuccessStatusCode;
     }
 
+ 
     /// <summary>
     /// 释放资源。
     /// </summary>
     public void Dispose() { }
 }
+

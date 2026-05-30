@@ -19,7 +19,7 @@ public interface IHermesResponseClient : IDisposable
     /// <param name="options">响应选项，如模型、温度、conversation key 等。</param>
     /// <param name="ct">取消令牌。</param>
     /// <returns>响应结果。</returns>
-    Task<ResponseResult> CreateAsync(string input, ResponseOptions? options = null, CancellationToken ct = default);
+    Task<ResponseResult> CreateAsync(dynamic input, ResponseOptions? options = null, CancellationToken ct = default);
 
     /// <summary>
     /// 创建流式响应。
@@ -30,7 +30,7 @@ public interface IHermesResponseClient : IDisposable
     /// <param name="options">响应选项。</param>
     /// <param name="ct">取消令牌。</param>
     /// <returns>SSE <c>data:</c> 行内容（不含 "data: " 前缀）的异步枚举。</returns>
-    IAsyncEnumerable<string> CreateStreamingAsync(string input, ResponseOptions? options = null, CancellationToken ct = default);
+    IAsyncEnumerable<string> CreateStreamingAsync(dynamic input, ResponseOptions? options = null, CancellationToken ct = default);
 
     /// <summary>
     /// 获取响应。

@@ -8,8 +8,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\HermesAgent.Sdk.MicrosoftAgent\HermesAgent.Sdk.MicrosoftAgent.csproj" />
     <ProjectReference Include="..\..\src\HermesAgent.Sdk\HermesAgent.Sdk.csproj" />
+    <ProjectReference Include="..\..\src\HermesAgent.Sdk.AgentAdapter\HermesAgent.Sdk.AgentAdapter.csproj" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.7" />
   </ItemGroup>
 

@@ -3,7 +3,7 @@ using Microsoft.Extensions.Logging;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 
-namespace HermesAgent.Sdk.MicrosoftAgent;
+namespace HermesAgent.Sdk.AgentAdapter.MicrosoftAgent;
 
 /// <summary>
 /// Hermes SDK 与 Microsoft Agent Framework (MAF) 之间的 IChatClient 适配器。
@@ -11,19 +11,17 @@ namespace HermesAgent.Sdk.MicrosoftAgent;
 /// <para>职责：将 MAF 标准的 IChatClient 调用转换为 Hermes Responses API (/v1/responses) 请求。</para>
 ///
 /// <para>架构说明：</para>
-/// <list type="bullet">
+/// <list>
 ///   <item><description>所有请求统一走 Responses API 路径（无聊天补全路径），由 IHermesResponseClient 处理。</description></item>
 ///   <item><description>会话状态通过 hermes-conversation-id（Topic ID）管理，服务端自动关联 store。</description></item>
 ///   <item><description>function_call 由服务端执行，客户端仅做结果映射（FunctionCallContent / FunctionResultContent）。</description></item>
 ///   <item><description>SSE 流式响应解析为 ChatResponseUpdate 序列。</description></item>
 /// </list>
 /// </summary>
-[Obsolete("Use HermesAgent from HermesAgent.Sdk.AgentAdapter instead. " +
-          "The AIAgent-based approach eliminates the IChatClient abstraction mismatch " +
-          "and maps session management directly to Hermes conversation IDs.")]
-public class HermesChatClientAdapter : IChatClient
+ 
+public class HermesClientAdapter : IChatClient
 {
-    private readonly ILogger<HermesChatClientAdapter> _logger;
+    private readonly ILogger<HermesClientAdapter> _logger;
     private readonly IHermesResponseClient _responseClient;
 
     /// <summary>
@@ -34,12 +32,18 @@ public class HermesChatClientAdapter : IChatClient
     const string ConversationIdKey = "hermes-conversation-id";
 
     /// <summary>
+    /// 内部持久化 conversation ID，key 为固定的 default。
+    /// 用于跨请求保持会话关联（ChatOptions.AdditionalProperties 在请求间会丢失）。
+    /// </summary>
+    private string? _persistedConversationId;
+
+    /// <summary>
     /// 初始化适配器。
     /// </summary>
     /// <param name="logger">日志记录器。</param>
     /// <param name="responseClient">Hermes Responses API 客户端。</param>
-    public HermesChatClientAdapter(
-        ILogger<HermesChatClientAdapter> logger,
+    public HermesClientAdapter(
+        ILogger<HermesClientAdapter> logger,
         IHermesResponseClient responseClient)
     {
         _logger = logger;
@@ -112,7 +116,21 @@ public class HermesChatClientAdapter : IChatClient
         CancellationToken ct)
     {
         var lastUserMsg = messages.LastOrDefault(m => m.Role == ChatRole.User);
-        var input = lastUserMsg?.Text ?? string.Empty;
+        dynamic input = lastUserMsg?.Text ?? string.Empty;
+
+        #region 媒体信息扩展
+        if (messages.HasMediaContent())
+        {
+
+            var item = new RequestItem("user");
+            var summary = messages.GetMediaSummary();
+            foreach (var uri in summary.UriContents)
+            {
+                 //Console.WriteLine($"  图片URI: {uri.Uri}  类型: {uri.MediaType}");
+            }
+        }
+        #endregion
+
         var responseOptions = ToResponseOptions(options);
 
         ResponseResult result;
@@ -125,9 +143,15 @@ public class HermesChatClientAdapter : IChatClient
             throw new InvalidOperationException("Hermes Responses API 响应解析失败", ex);
         }
 
-        // 将服务端返回的 response.id 写回 ChatOptions.AdditionalProperties
-        // 上游中间件（如日志、跟踪）可通过 "hermes-response-id" 读取
-        TrackResponseId(options, result.Id);
+        // 将服务端返回的 Conversation ID 写回 ChatOptions.AdditionalProperties 并持久化
+        // 确保多轮对话时关联到同一话题
+        if (!string.IsNullOrEmpty(result.Conversation))
+        {
+            options ??= new();
+            options.AdditionalProperties ??= [];
+            options.AdditionalProperties[ConversationIdKey] = result.Conversation;
+            _persistedConversationId = result.Conversation;
+        }
 
         var mafMessage = new Microsoft.Extensions.AI.ChatMessage { Role = ChatRole.Assistant };
         var contents = MapOutputToContents(result.Output);
@@ -256,51 +280,44 @@ public class HermesChatClientAdapter : IChatClient
     /// 从 MAF ChatOptions.AdditionalProperties 中读取会话标识（Topic ID）。
     /// 未设置时返回 null，表示发起新会话（服务端自动创建）。
     /// </summary>
-    private static string? GetConversationId(Microsoft.Extensions.AI.ChatOptions? options)
+    private string? GetConversationId(Microsoft.Extensions.AI.ChatOptions? options)
     {
+        // 优先从当前请求的 AdditionalProperties 读取
         if (options?.AdditionalProperties?.TryGetValue(ConversationIdKey, out var val) == true
             && val is string s && !string.IsNullOrEmpty(s))
             return s;
 
+        // 回退到内部持久化的值
+        if (!string.IsNullOrEmpty(_persistedConversationId))
+            return _persistedConversationId;
+
         return null;
-    }
-
-    /// <summary>
-    /// 将响应 ID 写入 ChatOptions.AdditionalProperties["hermes-response-id"]，
-    /// 供上游中间件（如日志中间件）在后续环节读取。
-    /// </summary>
-    private static void TrackResponseId(Microsoft.Extensions.AI.ChatOptions? options, string? responseId)
-    {
-        if (options?.AdditionalProperties is null || string.IsNullOrEmpty(responseId))
-            return;
-
-        options.AdditionalProperties["hermes-response-id"] = responseId;
     }
 
     /// <summary>
     /// 将 MAF ChatOptions 转换为 Hermes SDK ResponseOptions。
     /// 映射字段：ModelId, Instructions, 会话ID, MaxOutputTokens, Temperature 及所有 AdditionalProperties 元数据。
     /// </summary>
-    private static ResponseOptions ToResponseOptions(Microsoft.Extensions.AI.ChatOptions? options)
+    private ResponseOptions ToResponseOptions(Microsoft.Extensions.AI.ChatOptions? options)
     {
         return new ResponseOptions
         {
-            Model = options?.ModelId,
+            Model = options?.ModelId ?? "default",
             Instructions = options?.Instructions,
             Conversation = GetConversationId(options),
-            MaxOutputTokens = options?.MaxOutputTokens,
-            Temperature = options?.Temperature,
+            MaxOutputTokens = options?.MaxOutputTokens ?? 1024,
+            Temperature = options?.Temperature ?? 0.7f,
             Metadata = options?.AdditionalProperties is { } props
                 ? props.Where(kv => kv.Value is not null)
                        .ToDictionary(kv => kv.Key, kv => kv.Value!.ToString()!)
-                : null,
+                : [],
         };
     }
 
     /// <summary>
     /// 将 Hermes SDK UsageInfo 映射为 MAF UsageDetails。
     /// </summary>
-    private static Microsoft.Extensions.AI.UsageDetails? MapToMafUsage(HermesAgent.Sdk.UsageInfo? usage)
+    private static Microsoft.Extensions.AI.UsageDetails? MapToMafUsage(UsageInfo? usage)
     {
         if (usage is null) return null;
 
@@ -392,10 +409,17 @@ public class HermesChatClientAdapter : IChatClient
                         // 文本内容已通过 response.output_text.delta 事件逐段 yield，无需重复输出。
                         if (eventRoot.TryGetProperty("response", out var completedResp))
                         {
-                            // 记录 response.id 供中间件追踪
-                            if (completedResp.TryGetProperty("id", out var respIdProp))
+                            // 写回服务端返回的 Conversation ID 并持久化，确保多轮对话关联
+                            if (completedResp.TryGetProperty("conversation", out var convProp))
                             {
-                                TrackResponseId(options, respIdProp.GetString());
+                                var convId = convProp.GetString();
+                                if (!string.IsNullOrEmpty(convId))
+                                {
+                                    options ??= new();
+                                    options.AdditionalProperties ??= [];
+                                    options.AdditionalProperties[ConversationIdKey] = convId;
+                                    _persistedConversationId = convId;
+                                }
                             }
                         }
                         return SseEventResult.Complete();
