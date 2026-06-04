@@ -60,7 +60,7 @@ public class InMemoryAgentSessionStore : IAgentSessionStore
     /// <returns>清理的会话数量。</returns>
     public int CleanupExpiredSessions()
     {
-        var now = DateTime.UtcNow;
+        var now = DateTime.Now;
         var expiredKeys = _sessions
             .Where(kv => kv.Value.ExpiresAt <= now)
             .Select(kv => kv.Key)

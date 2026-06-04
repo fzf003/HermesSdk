@@ -4,27 +4,43 @@ using HermesAgent.Sdk.AgentAdapter.MicrosoftAgent;
 using HermesAgent.Sdk.AgentAdapter.Sessions;
 using HermesAgent.Sdk.Extensions;
 using Microsoft.Agents.AI;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using System.Text.Json;
-using ChatOptions = Microsoft.Extensions.AI.ChatOptions;
 using ChatMessage = Microsoft.Extensions.AI.ChatMessage;
+using ChatOptions = Microsoft.Extensions.AI.ChatOptions;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Logging — align with MafIntegrationDemo
+builder.Logging.AddConsole(opt => opt.LogToStandardErrorThreshold = LogLevel.Debug);
 
 // Register Hermes core clients
 builder.Services.AddHermesAgent(builder.Configuration)
        .AddHermesAgentAdapter(builder.Configuration)
-       // 注册会话存储（混合模式：同时支持 Web Cookie 和 API Header）
        .AddAgentSessionStoreHybrid(options =>
        {
            options.DefaultExpiration = TimeSpan.FromMinutes(60);
-       });
+           options.AuthMethod = SessionMethod.Header;
+       }).AddSingleton<AIAgent>(sp =>
+        {
+            var chatClient = sp.GetRequiredService<IChatClient>();
+            var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+            return chatClient.AsHermesAIAgent(model: "default", loggerFactory: loggerFactory);
+        });
 
-// ── Swagger ──
+
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
+
+var loggerFactory = app.Services.GetRequiredService<ILoggerFactory>();
+
 app.UseSwagger();
 app.UseSwaggerUI();
 
@@ -41,7 +57,6 @@ app.MapPost("/api/chat", async (
     {
         var options = new ChatOptions { ModelId = "default" };
 
-        // 使用请求中的 SessionId（如果有）
         if (!string.IsNullOrEmpty(request.SessionId))
         {
             options.AdditionalProperties = new AdditionalPropertiesDictionary
@@ -128,22 +143,18 @@ app.MapPost("/api/chat/stream", async (
 //  AIAgent endpoint — ChatClientAgent + Session
 //  支持多轮对话：传 sessionId 复用话题，不传则新建
 //  POST /api/chat/agent
-//  Body: { "prompt": "...", "sessionId": "xxx" }
 // ──────────────────────────────────────────────
 app.MapPost("/api/chat/agent", async (
     AgentChatRequest request,
-    IChatClient chatClient,
     IAgentSessionStore sessionStore,
     ISessionIdResolver sessionIdResolver,
-    HttpContext httpContext) =>
+    HttpContext httpContext,
+    AIAgent agent) =>
 {
     try
     {
         // 解析 SessionId
         var sessionId = request.SessionId ?? sessionIdResolver.Resolve(httpContext);
-
-        // 从 IChatClient 创建 ChatClientAgent
-        var agent = chatClient.AsHermesAIAgent(model: "default");
 
         // 加载或创建 AgentSession
         AgentSession? session = null;
@@ -159,22 +170,42 @@ app.MapPost("/api/chat/agent", async (
 
         session ??= await agent.CreateSessionAsync(CancellationToken.None);
 
-        // 运行对话
-        var response = await agent.RunAsync(request.Prompt!, session, new AgentRunOptions(), CancellationToken.None);
-
         // 生成或使用现有的 SessionId
         sessionId ??= Guid.NewGuid().ToString("N");
+
+        // 按设计文档：SessionId 存入 AgentSession.StateBag
+        session.SetHermesSessionInfo("hermes_conversationId", sessionId);
+
+        var options = new AgentRunOptions
+        {
+            AdditionalProperties = new AdditionalPropertiesDictionary
+            {
+                ["hermes-conversation-id"] = session.GetHermesSessionInfo<string>("hermes_conversationId"),
+            },
+        };
+
+        // 运行对话
+        var response = await agent.RunAsync(request.Prompt!, session, options, CancellationToken.None);
 
         // 保存会话
         var jsonElement2 = await agent.SerializeSessionAsync(session);
         var json = jsonElement2.GetRawText();
         await sessionStore.SaveAsync(sessionId, json);
 
-        // Web 模式：写入 Cookie
+        // 根据 SessionMethod 写入 SessionId
         if (sessionIdResolver is CookieSessionIdResolver)
         {
-            var cookieManager = httpContext.RequestServices.GetService<ISessionCookieManager>();
-            cookieManager?.SetCookie(sessionId);
+            httpContext.Response.Cookies.Append("ChatSessionId", sessionId, new CookieOptions
+            {
+                HttpOnly = true,
+                Secure = false,
+                SameSite = SameSiteMode.Lax,
+                Path = "/"
+            });
+        }
+        else if (sessionIdResolver is HeaderSessionIdResolver)
+        {
+            httpContext.Response.Headers["X-Session-Id"] = sessionId;
         }
 
         return Results.Ok(new AgentChatResponseData(
@@ -195,14 +226,15 @@ app.MapPost("/api/chat/agent", async (
 // ──────────────────────────────────────────────
 //  AIAgent streaming endpoint — ChatClientAgent + Session
 //  POST /api/chat/agent/stream
-//  Body: { "prompt": "...", "sessionId": "xxx" }
 // ──────────────────────────────────────────────
 app.MapPost("/api/chat/agent/stream", async (
     AgentChatRequest request,
-    IChatClient chatClient,
     IAgentSessionStore sessionStore,
     ISessionIdResolver sessionIdResolver,
-    HttpContext http) =>
+    AIAgent agent,
+    HttpContext http,
+   [FromHeader(Name = "X-Session-Id")] string xsession
+    ) =>
 {
     http.Response.ContentType = "text/event-stream";
     http.Response.Headers["Cache-Control"] = "no-cache";
@@ -211,10 +243,7 @@ app.MapPost("/api/chat/agent/stream", async (
     try
     {
         // 解析 SessionId
-        var sessionId = request.SessionId ?? sessionIdResolver.Resolve(http);
-
-        // 从 IChatClient 创建 ChatClientAgent
-        var agent = chatClient.AsHermesAIAgent(model: "default");
+        var sessionId = sessionIdResolver.Resolve(http);
 
         // 加载或创建 AgentSession
         AgentSession? session = null;
@@ -230,8 +259,22 @@ app.MapPost("/api/chat/agent/stream", async (
 
         session ??= await agent.CreateSessionAsync(CancellationToken.None);
 
+        // 生成或使用现有的 SessionId
+        sessionId ??= Guid.NewGuid().ToString("N");
+
+        // 按设计文档：SessionId 存入 AgentSession.StateBag
+        session.SetHermesSessionInfo("hermes_conversationId", sessionId);
+
+        var streamOptions = new AgentRunOptions
+        {
+            AdditionalProperties = new AdditionalPropertiesDictionary
+            {
+                ["hermes-conversation-id"] = session.GetHermesSessionInfo<string>("hermes_conversationId"),
+            },
+        };
+
         // 运行流式对话
-        await foreach (var update in agent.RunStreamingAsync(request.Prompt!, session, new AgentRunOptions(), CancellationToken.None))
+        await foreach (var update in agent.RunStreamingAsync(request.Prompt!, session, streamOptions, CancellationToken.None))
         {
             if (!string.IsNullOrEmpty(update.Text))
             {
@@ -240,19 +283,25 @@ app.MapPost("/api/chat/agent/stream", async (
             }
         }
 
-        // 生成或使用现有的 SessionId
-        sessionId ??= Guid.NewGuid().ToString("N");
-
         // 保存会话
         var serializedJson = await agent.SerializeSessionAsync(session);
         var json = serializedJson.GetRawText();
         await sessionStore.SaveAsync(sessionId, json);
 
-        // Web 模式：写入 Cookie
+        // 根据 SessionMethod 写入 SessionId
         if (sessionIdResolver is CookieSessionIdResolver)
         {
-            var cookieManager = http.RequestServices.GetService<ISessionCookieManager>();
-            cookieManager?.SetCookie(sessionId);
+            http.Response.Cookies.Append("ChatSessionId", sessionId, new CookieOptions
+            {
+                HttpOnly = true,
+                Secure = false,
+                SameSite = SameSiteMode.Lax,
+                Path = "/"
+            });
+        }
+        else if (sessionIdResolver is HeaderSessionIdResolver)
+        {
+            http.Response.Headers["X-Session-Id"] = sessionId;
         }
 
         await http.Response.WriteAsync($"data: [DONE] sessionId={sessionId}\n\n");

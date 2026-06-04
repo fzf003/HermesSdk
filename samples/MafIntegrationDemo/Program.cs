@@ -42,6 +42,9 @@ var hermesAgent = chatClient.AsHermesAIAgent(
     name: "JockAgent",
     loggerFactory: loggerfactory,
     tools: []);
+
+ 
+
 var agent = hermesAgent.AsBuilder().UseLogging(loggerfactory).Build();
 
  
@@ -179,7 +182,4 @@ static void PrintResponse(dynamic response)
 Console.WriteLine("\n运行结束。");
 
 
-record UserInfo(string id,int age)
-{
-
-}
+record UserInfo(string id,int age);
